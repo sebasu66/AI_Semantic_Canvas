@@ -26,6 +26,13 @@ function pageAt(index?: number): Page {
   return all[i];
 }
 
+function reusableBlankPage(): Page | null {
+  const all = pages();
+  if (all.length !== 1) return null;
+  const page = all[0];
+  return page.url() === 'about:blank' ? page : null;
+}
+
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, browserConnected: Boolean(context), pages: pages().length });
 });
@@ -68,8 +75,11 @@ app.post('/api/browser/select', (req, res) => {
 app.post('/api/browser/open', async (req, res) => {
   try {
     const url = String(req.body?.url || 'https://example.com');
-    const page = context ? await context.newPage() : null;
-    if (!page) throw new Error('Launch Chrome first.');
+    if (!context) throw new Error('Launch Chrome first.');
+
+    // Chromium starts persistent contexts with an about:blank page. Reuse it
+    // for the first navigation so the user does not see a mysterious empty tab.
+    const page = reusableBlankPage() ?? await context.newPage();
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     selectedPageIndex = pages().indexOf(page);
     res.json({ ok: true, index: selectedPageIndex, title: await page.title(), url: page.url() });
@@ -82,7 +92,7 @@ app.post('/api/browser/snapshot', async (req, res) => {
   try {
     const page = pageAt(req.body?.index);
     const snapshot = await page.evaluate(() => {
-      const candidates = Array.from(document.querySelectorAll('a,button,input,select,textarea,[role],[contenteditable=\"true\"],h1,h2,h3,p,article,main,section'));
+      const candidates = Array.from(document.querySelectorAll('a,button,input,select,textarea,[role],[contenteditable="true"],h1,h2,h3,p,article,main,section'));
       const elements = candidates.slice(0, 250).map((el, index) => {
         const node = el as HTMLElement;
         const rect = node.getBoundingClientRect();
