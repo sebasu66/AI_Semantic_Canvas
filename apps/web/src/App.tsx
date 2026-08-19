@@ -319,13 +319,13 @@ function App() {
     const current = drag.current;
     if (current.layer === 'semantic') {
       setObjects(previous => previous.map(object => (
-        object.id === current.id
+        `${object.sourceId}-${object.id}` === current.id
           ? { ...object, x: event.clientX - current.dx, y: event.clientY - current.dy }
           : object
       )));
     } else {
       setRawCards(previous => previous.map(card => (
-        card.id === current.id
+        `${card.sourceId}-${card.id}` === current.id
           ? { ...card, x: event.clientX - current.dx, y: event.clientY - current.dy }
           : card
       )));
