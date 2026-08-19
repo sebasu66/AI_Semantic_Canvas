@@ -110,8 +110,9 @@ export class LocalHarnessProvider implements BrowserProvider {
 
   async open(url: string): Promise<BrowserTarget> {
     await this.ensureConnected();
-    const targetId = await this.repl.createTarget(url);
-    await new Promise(resolve => setTimeout(resolve, 500));
+    // Create a background target first so adding a source never steals focus from the canvas.
+    const targetId = await this.repl.createTarget('about:blank', true);
+    await this.repl.navigate(targetId, url);
     const target = (await this.repl.listTargets()).find(item => item.targetId === targetId);
     return this.toTarget(target ?? { targetId, title: url, url });
   }
