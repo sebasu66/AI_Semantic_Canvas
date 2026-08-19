@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent, PointerEvent as ReactPointerEvent } from 'react';
 
-type PageInfo = { index: number; title: string; url: string; selected?: boolean };
 type RawElement = {
   id: string;
   sourceIndex: number;
@@ -13,8 +12,38 @@ type RawElement = {
   placeholder?: string | null;
   bbox: number[];
 };
-type Snapshot = { title: string; url: string; viewport: { width: number; height: number }; elements: RawElement[] };
+
+type Snapshot = {
+  title: string;
+  url: string;
+  viewport: { width: number; height: number };
+  elements: RawElement[];
+};
+
 type SourceKind = 'web' | 'gmail' | 'gdrive' | 'google-search' | 'local-image';
+type BrowserProviderId = 'chrome-personal' | 'edge-worker' | 'cloud-browser-use';
+type ProviderChoice = 'auto' | BrowserProviderId;
+
+type BrowserProviderStatus = {
+  id: BrowserProviderId;
+  label: string;
+  kind: string;
+  configured: boolean;
+  connected: boolean;
+  targetCount: number;
+  detail?: string;
+  liveUrl?: string | null;
+};
+
+type BrowserTarget = {
+  providerId: BrowserProviderId;
+  targetId: string;
+  title: string;
+  url: string;
+  browserLabel: string;
+  liveUrl?: string | null;
+};
+
 type SemanticAction = {
   id: string;
   kind: 'navigate' | 'click';
@@ -23,6 +52,7 @@ type SemanticAction = {
   sourceElementId?: string;
   sourceIndex?: number;
 };
+
 type SemanticObjectType =
   | 'document'
   | 'section'
@@ -33,6 +63,7 @@ type SemanticObjectType =
   | 'drive-grid'
   | 'search-results'
   | 'image';
+
 type SemanticObject = {
   id: string;
   type: SemanticObjectType;
@@ -50,19 +81,32 @@ type SemanticObject = {
     boxes: number[][];
   };
 };
+
 type CanvasObject = SemanticObject & { x: number; y: number; sourceId: string };
 type RawCard = RawElement & { x: number; y: number; sourceId: string };
+
 type WorkspaceSource = {
   id: string;
-  pageIndex?: number;
+  providerId?: BrowserProviderId;
+  targetId?: string;
+  providerLabel?: string;
   title: string;
   url: string;
   kind: SourceKind;
   updatedAt: number;
 };
-type Health = { ok: true; browserConnected: boolean; pages: number };
-type SnapshotResponse = { ok: true; snapshot: Snapshot; semanticObjects: SemanticObject[]; sourceKind: Exclude<SourceKind, 'local-image'> };
-type ActionResponse = SnapshotResponse & { index: number; title: string; url: string };
+
+type SnapshotResponse = {
+  ok: true;
+  snapshot: Snapshot;
+  semanticObjects: SemanticObject[];
+  sourceKind: Exclude<SourceKind, 'local-image'>;
+};
+
+type OpenResponse = SnapshotResponse & { target: BrowserTarget };
+type ActionResponse = SnapshotResponse & { targetId: string };
+
+type ProvidersResponse = { ok: true; providers: BrowserProviderStatus[] };
 
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options });
@@ -83,6 +127,24 @@ function kindLabel(kind: SourceKind): string {
   if (kind === 'google-search') return 'Google Search';
   if (kind === 'local-image') return 'Local image';
   return 'Web';
+}
+
+function providerShortLabel(providerId?: BrowserProviderId): string {
+  if (providerId === 'chrome-personal') return 'Personal';
+  if (providerId === 'edge-worker') return 'Worker';
+  if (providerId === 'cloud-browser-use') return 'Cloud';
+  return 'Local';
+}
+
+function autoProviderFor(urlValue: string): BrowserProviderId {
+  try {
+    const url = new URL(urlValue);
+    const host = url.hostname.toLowerCase();
+    if (host === 'mail.google.com' || host === 'drive.google.com') return 'chrome-personal';
+  } catch {
+    // generic URLs go to the isolated worker
+  }
+  return 'edge-worker';
 }
 
 function layoutSemantic(
@@ -116,42 +178,39 @@ function App() {
   const [sources, setSources] = useState<WorkspaceSource[]>([]);
   const [objects, setObjects] = useState<CanvasObject[]>([]);
   const [rawCards, setRawCards] = useState<RawCard[]>([]);
+  const [providers, setProviders] = useState<BrowserProviderStatus[]>([]);
+  const [providerChoice, setProviderChoice] = useState<ProviderChoice>('auto');
   const [activeSourceId, setActiveSourceId] = useState<string | null>(null);
   const [debugDom, setDebugDom] = useState(false);
   const [status, setStatus] = useState('Workspace ready');
-  const [browserConnected, setBrowserConnected] = useState(false);
   const [urlInput, setUrlInput] = useState('example.com');
   const [busy, setBusy] = useState(false);
   const drag = useRef<{ id: string; dx: number; dy: number; layer: 'semantic' | 'raw' } | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
 
   const sourceMap = useMemo(() => new Map(sources.map(source => [source.id, source])), [sources]);
+  const providerMap = useMemo(() => new Map(providers.map(provider => [provider.id, provider])), [providers]);
   const visibleObjects = useMemo(() => objects.slice(0, 160), [objects]);
+  const connectedProviders = providers.filter(provider => provider.connected);
+  const cloudConfigured = providerMap.get('cloud-browser-use')?.configured ?? false;
 
   useEffect(() => {
     let cancelled = false;
-    async function pollBrowser() {
+    async function pollProviders() {
       try {
-        const health = await api<Health>('/api/health');
-        if (!cancelled) setBrowserConnected(health.browserConnected);
+        const data = await api<ProvidersResponse>('/api/providers');
+        if (!cancelled) setProviders(data.providers);
       } catch {
-        if (!cancelled) setBrowserConnected(false);
+        if (!cancelled) setProviders([]);
       }
     }
-    void pollBrowser();
-    const timer = window.setInterval(() => void pollBrowser(), 2000);
+    void pollProviders();
+    const timer = window.setInterval(() => void pollProviders(), 2500);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
   }, []);
-
-  async function ensureBrowser() {
-    if (browserConnected) return;
-    setStatus('Starting controlled browser…');
-    await api<{ ok: true; pages: PageInfo[] }>('/api/browser/launch', { method: 'POST', body: '{}' });
-    setBrowserConnected(true);
-  }
 
   function sourceAnchor(sourceId: string): { x: number; y: number } | undefined {
     const existing = objects.filter(object => object.sourceId === sourceId);
@@ -162,7 +221,14 @@ function App() {
     };
   }
 
-  function upsertSourceFromSnapshot(sourceId: string, pageIndex: number, data: SnapshotResponse, isNew: boolean) {
+  function upsertSourceFromSnapshot(
+    sourceId: string,
+    providerId: BrowserProviderId,
+    targetId: string,
+    data: SnapshotResponse,
+    isNew: boolean,
+    providerLabel?: string
+  ) {
     const ordinal = isNew ? sources.length : Math.max(0, sources.findIndex(source => source.id === sourceId));
     const anchor = isNew ? undefined : sourceAnchor(sourceId);
     const nextObjects = layoutSemantic(data.semanticObjects, sourceId, ordinal, anchor);
@@ -173,7 +239,9 @@ function App() {
     setSources(previous => {
       const nextSource: WorkspaceSource = {
         id: sourceId,
-        pageIndex,
+        providerId,
+        targetId,
+        providerLabel: providerLabel || providerMap.get(providerId)?.label || providerShortLabel(providerId),
         title: data.snapshot.title || data.snapshot.url,
         url: data.snapshot.url,
         kind: data.sourceKind,
@@ -186,27 +254,29 @@ function App() {
       return copy;
     });
     setActiveSourceId(sourceId);
-    setStatus(`${kindLabel(data.sourceKind)} added · ${data.semanticObjects.length} widget${data.semanticObjects.length === 1 ? '' : 's'}`);
+    setStatus(`${kindLabel(data.sourceKind)} via ${providerShortLabel(providerId)} · ${data.semanticObjects.length} widget${data.semanticObjects.length === 1 ? '' : 's'}`);
   }
 
-  async function snapshotPage(pageIndex: number): Promise<SnapshotResponse> {
-    return api<SnapshotResponse>('/api/browser/snapshot', {
-      method: 'POST',
-      body: JSON.stringify({ index: pageIndex })
-    });
+  function resolveProvider(url: string, requested?: ProviderChoice): BrowserProviderId {
+    const choice = requested ?? providerChoice;
+    return choice === 'auto' ? autoProviderFor(url) : choice;
   }
 
-  async function addWebSource(urlValue: string) {
-    await ensureBrowser();
+  async function addWebSource(urlValue: string, requestedProvider?: ProviderChoice) {
     const url = normalizeUrl(urlValue);
-    setStatus(`Opening ${url}…`);
-    const opened = await api<{ ok: true; index: number; title: string; url: string }>('/api/browser/open', {
+    const providerId = resolveProvider(url, requestedProvider);
+    const provider = providerMap.get(providerId);
+    if (provider && !provider.configured) {
+      throw new Error(`${provider.label} is not configured yet.`);
+    }
+
+    setStatus(`Opening ${url} via ${provider?.label || providerShortLabel(providerId)}…`);
+    const data = await api<OpenResponse>(`/api/providers/${providerId}/open`, {
       method: 'POST',
       body: JSON.stringify({ url })
     });
-    const data = await snapshotPage(opened.index);
-    const sourceId = `browser-${opened.index}-${Date.now()}`;
-    upsertSourceFromSnapshot(sourceId, opened.index, data, true);
+    const sourceId = `${providerId}-${data.target.targetId}`;
+    upsertSourceFromSnapshot(sourceId, providerId, data.target.targetId, data, true, data.target.browserLabel);
     setUrlInput('');
   }
 
@@ -235,12 +305,15 @@ function App() {
 
   async function refreshSource(sourceId: string) {
     const source = sourceMap.get(sourceId);
-    if (source?.pageIndex === undefined) return;
+    if (!source?.providerId || !source.targetId) return;
     setBusy(true);
     setStatus(`Refreshing ${source.title}…`);
     try {
-      const data = await snapshotPage(source.pageIndex);
-      upsertSourceFromSnapshot(sourceId, source.pageIndex, data, false);
+      const data = await api<SnapshotResponse>(`/api/providers/${source.providerId}/snapshot`, {
+        method: 'POST',
+        body: JSON.stringify({ targetId: source.targetId })
+      });
+      upsertSourceFromSnapshot(sourceId, source.providerId, source.targetId, data, false, source.providerLabel);
     } catch (error) {
       setStatus(String(error));
     } finally {
@@ -292,15 +365,15 @@ function App() {
 
   async function runAction(sourceId: string, action: SemanticAction) {
     const source = sourceMap.get(sourceId);
-    if (source?.pageIndex === undefined) return;
+    if (!source?.providerId || !source.targetId) return;
     setBusy(true);
     setStatus(`${action.kind === 'navigate' ? 'Opening' : 'Executing'} ${action.label}…`);
     try {
-      const data = await api<ActionResponse>('/api/browser/action', {
+      const data = await api<ActionResponse>(`/api/providers/${source.providerId}/action`, {
         method: 'POST',
-        body: JSON.stringify({ index: source.pageIndex, action })
+        body: JSON.stringify({ targetId: source.targetId, action })
       });
-      upsertSourceFromSnapshot(sourceId, data.index, data, false);
+      upsertSourceFromSnapshot(sourceId, source.providerId, data.targetId, data, false, source.providerLabel);
     } catch (error) {
       setStatus(String(error));
     } finally {
@@ -336,6 +409,10 @@ function App() {
     drag.current = null;
   }
 
+  const providerSummary = connectedProviders.length
+    ? connectedProviders.map(provider => providerShortLabel(provider.id)).join(' + ')
+    : 'No providers connected';
+
   return (
     <div className="app" onPointerMove={pointerMove} onPointerUp={pointerUp}>
       <aside className="sidebar">
@@ -343,15 +420,31 @@ function App() {
         <p className="muted">Many sources. One fluid workspace.</p>
 
         <div className="connectionRow">
-          <span className={browserConnected ? 'connectionDot online' : 'connectionDot'} />
+          <span className={connectedProviders.length ? 'connectionDot online' : 'connectionDot'} />
           <div>
-            <strong>{browserConnected ? 'Controlled browser' : 'Browser disconnected'}</strong>
-            <span>{browserConnected ? 'Live and observable' : 'Starts automatically when needed'}</span>
+            <strong>{connectedProviders.length ? `${connectedProviders.length} browser providers` : 'Browser providers offline'}</strong>
+            <span>{providerSummary}</span>
           </div>
         </div>
 
+        <div className="providerStrip">
+          {providers.map(provider => (
+            <span key={provider.id} className={`providerChip ${provider.connected ? 'online' : ''} ${provider.configured ? '' : 'disabled'}`} title={provider.detail}>
+              <i />{providerShortLabel(provider.id)}
+            </span>
+          ))}
+        </div>
+
         <form className="urlForm" onSubmit={openAndAdd}>
-          <label htmlFor="url-input">Add web source</label>
+          <div className="formLabelRow">
+            <label htmlFor="url-input">Add web source</label>
+            <select value={providerChoice} onChange={event => setProviderChoice(event.target.value as ProviderChoice)} aria-label="Browser provider">
+              <option value="auto">Auto</option>
+              <option value="chrome-personal">Personal</option>
+              <option value="edge-worker">Worker</option>
+              <option value="cloud-browser-use" disabled={!cloudConfigured}>Cloud{cloudConfigured ? '' : ' · key needed'}</option>
+            </select>
+          </div>
           <div className="urlRow">
             <input
               id="url-input"
@@ -362,7 +455,7 @@ function App() {
             />
             <button className="goButton" type="submit" disabled={busy}>+</button>
           </div>
-          <span className="formHint">Each source adds widgets without replacing the canvas.</span>
+          <span className="formHint">Auto routes authenticated sources to Personal and ordinary web to the isolated Worker.</span>
         </form>
 
         <div className="quickSources">
@@ -379,9 +472,9 @@ function App() {
           {sources.map(source => (
             <div key={source.id} className={source.id === activeSourceId ? 'sourceItem active' : 'sourceItem'} onClick={() => setActiveSourceId(source.id)}>
               <div className="sourceItemTop">
-                <span>{kindLabel(source.kind)}</span>
+                <span>{kindLabel(source.kind)}{source.providerId ? ` · ${providerShortLabel(source.providerId)}` : ''}</span>
                 <div>
-                  {source.pageIndex !== undefined && <button disabled={busy} title="Refresh source" onClick={event => { event.stopPropagation(); void refreshSource(source.id); }}>↻</button>}
+                  {source.targetId && <button disabled={busy} title="Refresh source" onClick={event => { event.stopPropagation(); void refreshSource(source.id); }}>↻</button>}
                   <button title="Remove from canvas" onClick={event => { event.stopPropagation(); removeSource(source.id); }}>×</button>
                 </div>
               </div>
@@ -399,13 +492,13 @@ function App() {
           <div className="workspaceIdentity">
             <span className="workspaceKicker">WORKSPACE</span>
             <strong>Multi-source semantic canvas</strong>
-            <span>{sources.length ? `${sources.length} live source${sources.length === 1 ? '' : 's'} composed into one workspace` : 'Add sources from the left. They stay together on this canvas.'}</span>
+            <span>{sources.length ? `${sources.length} live source${sources.length === 1 ? '' : 's'} across ${Math.max(1, connectedProviders.length)} provider${connectedProviders.length === 1 ? '' : 's'}` : 'Add sources from the left. They stay together on this canvas.'}</span>
           </div>
           <div className="headerStats">
             <button className={debugDom ? 'inspectToggle active' : 'inspectToggle'} onClick={() => setDebugDom(value => !value)}>
               {debugDom ? 'Semantic view' : 'Inspect DOM'}
             </button>
-            <span className="sourceBadge">{browserConnected ? 'BROWSER LIVE' : 'BROWSER OFFLINE'}</span>
+            <span className="sourceBadge">{connectedProviders.length ? `${connectedProviders.length} PROVIDERS LIVE` : 'PROVIDERS OFFLINE'}</span>
             <div className="badge">{debugDom ? `${rawCards.length} nodes` : `${objects.length} widgets`}</div>
           </div>
         </div>
@@ -421,7 +514,7 @@ function App() {
             >
               <div className="entityMeta">
                 <span>{object.label}</span>
-                <code>{source ? kindLabel(source.kind) : object.id}</code>
+                <code>{source?.providerId ? `${kindLabel(source.kind)} · ${providerShortLabel(source.providerId)}` : source ? kindLabel(source.kind) : object.id}</code>
               </div>
               {object.imageUrl && <img className="widgetImage" src={object.imageUrl} alt={object.title || 'Local image'} draggable={false} />}
               {object.title && <h2>{object.title}</h2>}
@@ -464,7 +557,7 @@ function App() {
               style={{ left: card.x, top: card.y }}
               onPointerDown={event => pointerDown(event, `${card.sourceId}-${card.id}`, card.x, card.y, 'raw')}
             >
-              <div className="cardMeta"><span>{card.role}</span><code>{source ? kindLabel(source.kind) : card.id}</code></div>
+              <div className="cardMeta"><span>{card.role}</span><code>{source?.providerId ? providerShortLabel(source.providerId) : source ? kindLabel(source.kind) : card.id}</code></div>
               <div className="cardText">{card.text || `<${card.tag}>`}</div>
               {card.href && <div className="cardHref">{card.href}</div>}
               <div className="cardBox">{card.bbox.join(' · ')}</div>
@@ -476,7 +569,7 @@ function App() {
           <div className="empty">
             <div className="emptyIcon">◎</div>
             <h1>Compose the internet.</h1>
-            <p>Add Gmail, Drive, Google results, ordinary web pages and local images. Each source becomes movable widgets instead of another rectangular application window.</p>
+            <p>Personal sessions, isolated worker browsers, cloud browsers and local files can become movable semantic widgets in the same workspace.</p>
           </div>
         )}
       </main>
