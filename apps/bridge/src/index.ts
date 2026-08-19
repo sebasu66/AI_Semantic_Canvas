@@ -13,6 +13,52 @@ const profileDir = path.join(repoRoot, '.runtime', 'chrome-profile');
 let context: BrowserContext | null = null;
 let selectedPageIndex = 0;
 
+type RawElement = {
+  id: string;
+  sourceIndex: number;
+  tag: string;
+  role: string;
+  text: string;
+  href: string | null;
+  inputType: string | null;
+  placeholder: string | null;
+  visible: boolean;
+  bbox: number[];
+};
+
+type Snapshot = {
+  title: string;
+  url: string;
+  viewport: { width: number; height: number };
+  elements: RawElement[];
+};
+
+type SemanticAction = {
+  id: string;
+  kind: 'navigate' | 'click';
+  label: string;
+  href?: string;
+  sourceElementId?: string;
+  sourceIndex?: number;
+};
+
+type SemanticObject = {
+  id: string;
+  type: 'document' | 'section' | 'navigation' | 'form' | 'action';
+  label: string;
+  title?: string;
+  description?: string;
+  text?: string;
+  items?: string[];
+  actions: SemanticAction[];
+  provenance: {
+    url: string;
+    pageTitle: string;
+    elementIds: string[];
+    boxes: number[][];
+  };
+};
+
 function pages(): Page[] {
   return context?.pages() ?? [];
 }
@@ -33,6 +79,189 @@ function reusableBlankPage(): Page | null {
   return page.url() === 'about:blank' ? page : null;
 }
 
+function uniqueByTextAndHref(elements: RawElement[]): RawElement[] {
+  const seen = new Set<string>();
+  const result: RawElement[] = [];
+  for (const element of elements) {
+    const key = `${element.text.toLowerCase()}|${element.href ?? ''}`;
+    if (!element.text || seen.has(key)) continue;
+    seen.add(key);
+    result.push(element);
+  }
+  return result;
+}
+
+function actionFromElement(element: RawElement): SemanticAction | null {
+  if (!element.text) return null;
+  if (element.href) {
+    return {
+      id: `navigate-${element.id}`,
+      kind: 'navigate',
+      label: element.text,
+      href: element.href,
+      sourceElementId: element.id,
+      sourceIndex: element.sourceIndex
+    };
+  }
+  if (element.tag === 'button' || element.role === 'button') {
+    return {
+      id: `click-${element.id}`,
+      kind: 'click',
+      label: element.text,
+      sourceElementId: element.id,
+      sourceIndex: element.sourceIndex
+    };
+  }
+  return null;
+}
+
+function provenance(snapshot: Snapshot, elements: RawElement[]) {
+  return {
+    url: snapshot.url,
+    pageTitle: snapshot.title,
+    elementIds: elements.map(element => element.id),
+    boxes: elements.map(element => element.bbox)
+  };
+}
+
+function buildSemanticObjects(snapshot: Snapshot): SemanticObject[] {
+  const elements = snapshot.elements;
+  const headings = elements.filter(element => /^h[1-3]$/.test(element.tag));
+  const paragraphs = elements.filter(element => element.tag === 'p' && element.text.length > 12);
+  const links = uniqueByTextAndHref(elements.filter(element => element.tag === 'a' && Boolean(element.href)));
+  const buttons = uniqueByTextAndHref(elements.filter(element => element.tag === 'button' || element.role === 'button'));
+  const controls = elements.filter(element => ['input', 'select', 'textarea'].includes(element.tag));
+  const objects: SemanticObject[] = [];
+  const consumed = new Set<string>();
+
+  const primaryHeading = headings.find(element => element.tag === 'h1') ?? headings[0];
+  const primaryParagraph = paragraphs[0];
+  const primaryActions = links.slice(0, 4).map(actionFromElement).filter((action): action is SemanticAction => Boolean(action));
+
+  if (primaryHeading || primaryParagraph || snapshot.title) {
+    const sourceElements = [primaryHeading, primaryParagraph, ...links.slice(0, 4)].filter((element): element is RawElement => Boolean(element));
+    sourceElements.forEach(element => consumed.add(element.id));
+    objects.push({
+      id: 'document-primary',
+      type: 'document',
+      label: 'Document',
+      title: primaryHeading?.text || snapshot.title || 'Untitled document',
+      description: primaryParagraph?.text,
+      actions: primaryActions,
+      provenance: provenance(snapshot, sourceElements)
+    });
+  }
+
+  const secondaryHeadings = headings.filter(element => element !== primaryHeading).slice(0, 8);
+  for (let i = 0; i < secondaryHeadings.length; i += 1) {
+    const heading = secondaryHeadings[i];
+    const headingY = heading.bbox[1];
+    const nextParagraph = paragraphs.find(element => !consumed.has(element.id) && element.bbox[1] >= headingY);
+    const sourceElements = [heading, nextParagraph].filter((element): element is RawElement => Boolean(element));
+    sourceElements.forEach(element => consumed.add(element.id));
+    objects.push({
+      id: `section-${heading.id}`,
+      type: 'section',
+      label: 'Section',
+      title: heading.text,
+      description: nextParagraph?.text,
+      actions: [],
+      provenance: provenance(snapshot, sourceElements)
+    });
+  }
+
+  if (controls.length) {
+    const formButtons = buttons.slice(0, 3);
+    const sourceElements = [...controls.slice(0, 12), ...formButtons];
+    sourceElements.forEach(element => consumed.add(element.id));
+    const fields = controls.slice(0, 10).map(element => element.placeholder || element.text || element.inputType || element.tag);
+    objects.push({
+      id: 'form-primary',
+      type: 'form',
+      label: 'Form',
+      title: fields.length === 1 ? fields[0] : `${fields.length} fields`,
+      items: fields,
+      actions: formButtons.map(actionFromElement).filter((action): action is SemanticAction => Boolean(action)),
+      provenance: provenance(snapshot, sourceElements)
+    });
+  }
+
+  const remainingLinks = links.filter(element => !consumed.has(element.id));
+  if (remainingLinks.length >= 2) {
+    const navigationLinks = remainingLinks.slice(0, 12);
+    navigationLinks.forEach(element => consumed.add(element.id));
+    objects.push({
+      id: 'navigation-primary',
+      type: 'navigation',
+      label: 'Navigation',
+      title: `${navigationLinks.length} links`,
+      items: navigationLinks.map(element => element.text),
+      actions: navigationLinks.map(actionFromElement).filter((action): action is SemanticAction => Boolean(action)),
+      provenance: provenance(snapshot, navigationLinks)
+    });
+  }
+
+  for (const element of buttons.filter(element => !consumed.has(element.id)).slice(0, 8)) {
+    const action = actionFromElement(element);
+    if (!action) continue;
+    objects.push({
+      id: `action-${element.id}`,
+      type: 'action',
+      label: 'Action',
+      title: element.text,
+      actions: [action],
+      provenance: provenance(snapshot, [element])
+    });
+  }
+
+  return objects.length ? objects : [{
+    id: 'document-fallback',
+    type: 'document',
+    label: 'Document',
+    title: snapshot.title || snapshot.url,
+    text: elements.slice(0, 6).map(element => element.text).filter(Boolean).join(' · '),
+    actions: [],
+    provenance: provenance(snapshot, elements.slice(0, 6))
+  }];
+}
+
+async function snapshotPage(page: Page): Promise<Snapshot> {
+  return page.evaluate(() => {
+    const selector = 'a,button,input,select,textarea,[role],[contenteditable="true"],h1,h2,h3,p,article,main,section';
+    const candidates = Array.from(document.querySelectorAll(selector));
+    const elements = candidates.slice(0, 300).map((el, sourceIndex) => {
+      const node = el as HTMLElement;
+      const rect = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      const text = ((node.innerText || node.getAttribute('aria-label') || node.getAttribute('title') || '') as string)
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 260);
+      const role = node.getAttribute('role') || node.tagName.toLowerCase();
+      const input = node instanceof HTMLInputElement ? node : null;
+      return {
+        id: `e${sourceIndex}`,
+        sourceIndex,
+        tag: node.tagName.toLowerCase(),
+        role,
+        text,
+        href: node instanceof HTMLAnchorElement ? node.href : null,
+        inputType: input?.type ?? null,
+        placeholder: input?.placeholder || node.getAttribute('placeholder'),
+        visible: rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none',
+        bbox: [Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), Math.round(rect.height)]
+      };
+    }).filter(element => element.visible && (element.text || ['input', 'select', 'textarea', 'button', 'a'].includes(element.tag)));
+
+    return {
+      title: document.title,
+      url: location.href,
+      viewport: { width: innerWidth, height: innerHeight },
+      elements
+    };
+  });
+}
+
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, browserConnected: Boolean(context), pages: pages().length });
 });
@@ -48,7 +277,7 @@ app.post('/api/browser/launch', async (_req, res) => {
       });
       if (!context.pages().length) await context.newPage();
     }
-    res.json({ ok: true, pages: await Promise.all(pages().map(async (p, index) => ({ index, title: await p.title(), url: p.url() }))) });
+    res.json({ ok: true, pages: await Promise.all(pages().map(async (page, index) => ({ index, title: await page.title(), url: page.url() }))) });
   } catch (error) {
     res.status(500).json({ ok: false, error: String(error) });
   }
@@ -56,7 +285,12 @@ app.post('/api/browser/launch', async (_req, res) => {
 
 app.get('/api/browser/pages', async (_req, res) => {
   try {
-    const data = await Promise.all(pages().map(async (p, index) => ({ index, title: await p.title(), url: p.url(), selected: index === selectedPageIndex })));
+    const data = await Promise.all(pages().map(async (page, index) => ({
+      index,
+      title: await page.title(),
+      url: page.url(),
+      selected: index === selectedPageIndex
+    })));
     res.json({ ok: true, pages: data });
   } catch (error) {
     res.status(500).json({ ok: false, error: String(error) });
@@ -76,9 +310,6 @@ app.post('/api/browser/open', async (req, res) => {
   try {
     const url = String(req.body?.url || 'https://example.com');
     if (!context) throw new Error('Launch Chrome first.');
-
-    // Chromium starts persistent contexts with an about:blank page. Reuse it
-    // for the first navigation so the user does not see a mysterious empty tab.
     const page = reusableBlankPage() ?? await context.newPage();
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     selectedPageIndex = pages().indexOf(page);
@@ -91,27 +322,40 @@ app.post('/api/browser/open', async (req, res) => {
 app.post('/api/browser/snapshot', async (req, res) => {
   try {
     const page = pageAt(req.body?.index);
-    const snapshot = await page.evaluate(() => {
-      const candidates = Array.from(document.querySelectorAll('a,button,input,select,textarea,[role],[contenteditable="true"],h1,h2,h3,p,article,main,section'));
-      const elements = candidates.slice(0, 250).map((el, index) => {
-        const node = el as HTMLElement;
-        const rect = node.getBoundingClientRect();
-        const style = getComputedStyle(node);
-        const text = ((node.innerText || node.getAttribute('aria-label') || node.getAttribute('title') || '') as string).replace(/\s+/g, ' ').trim().slice(0, 220);
-        const role = node.getAttribute('role') || node.tagName.toLowerCase();
-        return {
-          id: `e${index}`,
-          tag: node.tagName.toLowerCase(),
-          role,
-          text,
-          href: node instanceof HTMLAnchorElement ? node.href : null,
-          visible: rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none',
-          bbox: [Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), Math.round(rect.height)]
-        };
-      }).filter(x => x.visible && (x.text || ['input','select','textarea','button','a'].includes(x.tag)));
-      return { title: document.title, url: location.href, viewport: { width: innerWidth, height: innerHeight }, elements };
+    const snapshot = await snapshotPage(page);
+    const semanticObjects = buildSemanticObjects(snapshot);
+    res.json({ ok: true, snapshot, semanticObjects });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error) });
+  }
+});
+
+app.post('/api/browser/action', async (req, res) => {
+  try {
+    const page = pageAt(req.body?.index);
+    const action = req.body?.action as SemanticAction | undefined;
+    if (!action?.kind) throw new Error('Action is required.');
+
+    if (action.kind === 'navigate') {
+      if (!action.href) throw new Error('Navigate action requires href.');
+      await page.goto(action.href, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    } else if (action.kind === 'click') {
+      if (!Number.isInteger(action.sourceIndex)) throw new Error('Click action requires sourceIndex.');
+      const selector = 'a,button,input,select,textarea,[role],[contenteditable="true"],h1,h2,h3,p,article,main,section';
+      await page.locator(selector).nth(Number(action.sourceIndex)).click({ timeout: 10000 });
+      await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => undefined);
+    }
+
+    selectedPageIndex = pages().indexOf(page);
+    const snapshot = await snapshotPage(page);
+    res.json({
+      ok: true,
+      index: selectedPageIndex,
+      title: await page.title(),
+      url: page.url(),
+      snapshot,
+      semanticObjects: buildSemanticObjects(snapshot)
     });
-    res.json({ ok: true, snapshot });
   } catch (error) {
     res.status(500).json({ ok: false, error: String(error) });
   }
