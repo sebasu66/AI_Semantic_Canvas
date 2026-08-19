@@ -1,7 +1,7 @@
 :root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #e7ebf1; background: #090b0f; font-synthesis: none; }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 100vw; min-height: 100vh; overflow: hidden; }
-button, input { font: inherit; }
+button, input, select { font: inherit; }
 button:disabled { opacity: .5; cursor: wait; }
 .app { display: grid; grid-template-columns: 310px 1fr; height: 100vh; background: #090b0f; }
 .sidebar { position: relative; z-index: 3; padding: 22px 18px; background: rgba(13,16,22,.98); border-right: 1px solid #242a35; box-shadow: 8px 0 32px rgba(0,0,0,.18); }
@@ -14,8 +14,17 @@ button:disabled { opacity: .5; cursor: wait; }
 .connectionRow span { font-size: 9px; color: #737f91; }
 .connectionDot { width: 8px; height: 8px; border-radius: 999px; background: #5b6471; box-shadow: 0 0 0 3px rgba(91,100,113,.12); }
 .connectionDot.online { background: #60e6ba; box-shadow: 0 0 0 3px rgba(96,230,186,.12), 0 0 12px rgba(96,230,186,.35); }
+.providerStrip { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.providerChip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #293342; background: #10151d; color: #748195; border-radius: 999px; padding: 4px 7px; font-size: 8px; }
+.providerChip i { width: 5px; height: 5px; border-radius: 999px; background: #505b6b; }
+.providerChip.online { color: #a9dcca; border-color: #315044; background: rgba(70,145,122,.08); }
+.providerChip.online i { background: #61dfb9; box-shadow: 0 0 8px rgba(97,223,185,.45); }
+.providerChip.disabled { opacity: .45; }
 .urlForm { display: grid; gap: 7px; margin-top: 14px; }
 .urlForm label { color: #929daf; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+.formLabelRow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.formLabelRow select { max-width: 132px; border: 1px solid #2f3948; background: #111720; color: #9ba8ba; border-radius: 7px; padding: 4px 7px; font-size: 9px; outline: none; }
+.formLabelRow select:focus { border-color: #50617a; }
 .urlRow { display: grid; grid-template-columns: 1fr 42px; gap: 7px; }
 .urlRow input { width: 100%; border: 1px solid #303949; background: #11161e; color: #e8edf4; border-radius: 10px; padding: 10px 11px; outline: none; }
 .urlRow input:focus { border-color: #5b6c82; box-shadow: 0 0 0 3px rgba(111,135,169,.12); }
