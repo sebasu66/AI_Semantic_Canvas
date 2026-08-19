@@ -9,6 +9,7 @@ app.use(express.json({ limit: '2mb' }));
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../../..');
 const profileDir = path.join(repoRoot, '.runtime', 'chrome-profile');
+const SEMANTIC_SELECTOR = 'a,button,input,select,textarea,[role],[contenteditable="true"],h1,h2,h3,p,article,main,section,tr,td';
 
 let context: BrowserContext | null = null;
 let selectedPageIndex = 0;
@@ -42,9 +43,19 @@ type SemanticAction = {
   sourceIndex?: number;
 };
 
+type SemanticObjectType =
+  | 'document'
+  | 'section'
+  | 'navigation'
+  | 'form'
+  | 'action'
+  | 'mail-list'
+  | 'drive-grid'
+  | 'search-results';
+
 type SemanticObject = {
   id: string;
-  type: 'document' | 'section' | 'navigation' | 'form' | 'action';
+  type: SemanticObjectType;
   label: string;
   title?: string;
   description?: string;
@@ -57,6 +68,11 @@ type SemanticObject = {
     elementIds: string[];
     boxes: number[][];
   };
+};
+
+type SemanticModel = {
+  sourceKind: 'web' | 'gmail' | 'gdrive' | 'google-search';
+  semanticObjects: SemanticObject[];
 };
 
 function pages(): Page[] {
@@ -79,35 +95,37 @@ function reusableBlankPage(): Page | null {
   return page.url() === 'about:blank' ? page : null;
 }
 
-function uniqueByTextAndHref(elements: RawElement[]): RawElement[] {
+function uniqueElements(elements: RawElement[]): RawElement[] {
   const seen = new Set<string>();
   const result: RawElement[] = [];
   for (const element of elements) {
-    const key = `${element.text.toLowerCase()}|${element.href ?? ''}`;
-    if (!element.text || seen.has(key)) continue;
+    const normalized = element.text.replace(/\s+/g, ' ').trim().toLowerCase();
+    const key = `${normalized}|${element.href ?? ''}`;
+    if (!normalized || seen.has(key)) continue;
     seen.add(key);
     result.push(element);
   }
   return result;
 }
 
-function actionFromElement(element: RawElement): SemanticAction | null {
-  if (!element.text) return null;
+function actionFromElement(element: RawElement, label?: string): SemanticAction | null {
+  const actionLabel = (label || element.text).trim().slice(0, 110);
+  if (!actionLabel) return null;
   if (element.href) {
     return {
       id: `navigate-${element.id}`,
       kind: 'navigate',
-      label: element.text,
+      label: actionLabel,
       href: element.href,
       sourceElementId: element.id,
       sourceIndex: element.sourceIndex
     };
   }
-  if (element.tag === 'button' || element.role === 'button') {
+  if (element.tag === 'button' || element.role === 'button' || element.tag === 'tr' || element.role === 'row' || element.role === 'gridcell') {
     return {
       id: `click-${element.id}`,
       kind: 'click',
-      label: element.text,
+      label: actionLabel,
       sourceElementId: element.id,
       sourceIndex: element.sourceIndex
     };
@@ -124,12 +142,101 @@ function provenance(snapshot: Snapshot, elements: RawElement[]) {
   };
 }
 
-function buildSemanticObjects(snapshot: Snapshot): SemanticObject[] {
+function sourceKindForUrl(urlValue: string): SemanticModel['sourceKind'] {
+  try {
+    const url = new URL(urlValue);
+    const host = url.hostname.toLowerCase();
+    if (host === 'mail.google.com') return 'gmail';
+    if (host === 'drive.google.com') return 'gdrive';
+    if ((host === 'google.com' || host.endsWith('.google.com')) && url.pathname === '/search') return 'google-search';
+  } catch {
+    // fall through to generic web semantics
+  }
+  return 'web';
+}
+
+function buildGmailObjects(snapshot: Snapshot): SemanticObject[] {
+  const rowCandidates = uniqueElements(snapshot.elements.filter(element =>
+    (element.tag === 'tr' || element.role === 'row') &&
+    element.text.length >= 8 &&
+    element.text.length <= 360
+  )).slice(0, 12);
+
+  if (!rowCandidates.length) return [];
+  const actions = rowCandidates
+    .map(element => actionFromElement(element, element.text.slice(0, 72)))
+    .filter((action): action is SemanticAction => Boolean(action));
+
+  return [{
+    id: 'gmail-inbox-visible',
+    type: 'mail-list',
+    label: 'Gmail',
+    title: snapshot.title || 'Inbox',
+    description: `${rowCandidates.length} visible conversations`,
+    items: rowCandidates.map(element => element.text.slice(0, 150)),
+    actions,
+    provenance: provenance(snapshot, rowCandidates)
+  }];
+}
+
+function buildDriveObjects(snapshot: Snapshot): SemanticObject[] {
+  const candidates = uniqueElements(snapshot.elements.filter(element =>
+    ['gridcell', 'row', 'listitem'].includes(element.role) &&
+    element.text.length >= 2 &&
+    element.text.length <= 260
+  )).slice(0, 16);
+
+  if (!candidates.length) return [];
+  const actions = candidates
+    .map(element => actionFromElement(element, element.text.slice(0, 72)))
+    .filter((action): action is SemanticAction => Boolean(action));
+
+  return [{
+    id: 'gdrive-visible-items',
+    type: 'drive-grid',
+    label: 'Google Drive',
+    title: 'Visible files',
+    description: `${candidates.length} visible Drive items`,
+    items: candidates.map(element => element.text.slice(0, 140)),
+    actions,
+    provenance: provenance(snapshot, candidates)
+  }];
+}
+
+function buildGoogleSearchObjects(snapshot: Snapshot): SemanticObject[] {
+  const links = uniqueElements(snapshot.elements.filter(element => {
+    if (element.tag !== 'a' || !element.href || element.text.length < 3) return false;
+    try {
+      const href = new URL(element.href);
+      return !href.hostname.endsWith('google.com') || (!href.pathname.startsWith('/search') && href.pathname !== '/');
+    } catch {
+      return false;
+    }
+  })).slice(0, 10);
+
+  if (!links.length) return [];
+  const actions = links
+    .map(element => actionFromElement(element, element.text.slice(0, 90)))
+    .filter((action): action is SemanticAction => Boolean(action));
+
+  return [{
+    id: 'google-search-results',
+    type: 'search-results',
+    label: 'Google Search',
+    title: snapshot.title.replace(/ - Google Search$/i, '') || 'Search results',
+    description: `${links.length} extracted results`,
+    items: links.map(element => element.text.slice(0, 150)),
+    actions,
+    provenance: provenance(snapshot, links)
+  }];
+}
+
+function buildGenericObjects(snapshot: Snapshot): SemanticObject[] {
   const elements = snapshot.elements;
   const headings = elements.filter(element => /^h[1-3]$/.test(element.tag));
   const paragraphs = elements.filter(element => element.tag === 'p' && element.text.length > 12);
-  const links = uniqueByTextAndHref(elements.filter(element => element.tag === 'a' && Boolean(element.href)));
-  const buttons = uniqueByTextAndHref(elements.filter(element => element.tag === 'button' || element.role === 'button'));
+  const links = uniqueElements(elements.filter(element => element.tag === 'a' && Boolean(element.href)));
+  const buttons = uniqueElements(elements.filter(element => element.tag === 'button' || element.role === 'button'));
   const controls = elements.filter(element => ['input', 'select', 'textarea'].includes(element.tag));
   const objects: SemanticObject[] = [];
   const consumed = new Set<string>();
@@ -153,8 +260,7 @@ function buildSemanticObjects(snapshot: Snapshot): SemanticObject[] {
   }
 
   const secondaryHeadings = headings.filter(element => element !== primaryHeading).slice(0, 8);
-  for (let i = 0; i < secondaryHeadings.length; i += 1) {
-    const heading = secondaryHeadings[i];
+  for (const heading of secondaryHeadings) {
     const headingY = heading.bbox[1];
     const nextParagraph = paragraphs.find(element => !consumed.has(element.id) && element.bbox[1] >= headingY);
     const sourceElements = [heading, nextParagraph].filter((element): element is RawElement => Boolean(element));
@@ -225,18 +331,27 @@ function buildSemanticObjects(snapshot: Snapshot): SemanticObject[] {
   }];
 }
 
+function buildSemanticModel(snapshot: Snapshot): SemanticModel {
+  const sourceKind = sourceKindForUrl(snapshot.url);
+  let semanticObjects: SemanticObject[] = [];
+  if (sourceKind === 'gmail') semanticObjects = buildGmailObjects(snapshot);
+  if (sourceKind === 'gdrive') semanticObjects = buildDriveObjects(snapshot);
+  if (sourceKind === 'google-search') semanticObjects = buildGoogleSearchObjects(snapshot);
+  if (!semanticObjects.length) semanticObjects = buildGenericObjects(snapshot);
+  return { sourceKind, semanticObjects };
+}
+
 async function snapshotPage(page: Page): Promise<Snapshot> {
-  return page.evaluate(() => {
-    const selector = 'a,button,input,select,textarea,[role],[contenteditable="true"],h1,h2,h3,p,article,main,section';
+  return page.evaluate((selector) => {
     const candidates = Array.from(document.querySelectorAll(selector));
-    const elements = candidates.slice(0, 300).map((el, sourceIndex) => {
+    const elements = candidates.slice(0, 700).map((el, sourceIndex) => {
       const node = el as HTMLElement;
       const rect = node.getBoundingClientRect();
       const style = getComputedStyle(node);
       const text = ((node.innerText || node.getAttribute('aria-label') || node.getAttribute('title') || '') as string)
         .replace(/\s+/g, ' ')
         .trim()
-        .slice(0, 260);
+        .slice(0, 420);
       const role = node.getAttribute('role') || node.tagName.toLowerCase();
       const input = node instanceof HTMLInputElement ? node : null;
       return {
@@ -259,7 +374,7 @@ async function snapshotPage(page: Page): Promise<Snapshot> {
       viewport: { width: innerWidth, height: innerHeight },
       elements
     };
-  });
+  }, SEMANTIC_SELECTOR);
 }
 
 app.get('/api/health', (_req, res) => {
@@ -323,8 +438,8 @@ app.post('/api/browser/snapshot', async (req, res) => {
   try {
     const page = pageAt(req.body?.index);
     const snapshot = await snapshotPage(page);
-    const semanticObjects = buildSemanticObjects(snapshot);
-    res.json({ ok: true, snapshot, semanticObjects });
+    const model = buildSemanticModel(snapshot);
+    res.json({ ok: true, snapshot, ...model });
   } catch (error) {
     res.status(500).json({ ok: false, error: String(error) });
   }
@@ -341,20 +456,21 @@ app.post('/api/browser/action', async (req, res) => {
       await page.goto(action.href, { waitUntil: 'domcontentloaded', timeout: 30000 });
     } else if (action.kind === 'click') {
       if (!Number.isInteger(action.sourceIndex)) throw new Error('Click action requires sourceIndex.');
-      const selector = 'a,button,input,select,textarea,[role],[contenteditable="true"],h1,h2,h3,p,article,main,section';
-      await page.locator(selector).nth(Number(action.sourceIndex)).click({ timeout: 10000 });
-      await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => undefined);
+      await page.locator(SEMANTIC_SELECTOR).nth(Number(action.sourceIndex)).click({ timeout: 10000 });
+      await page.waitForLoadState('domcontentloaded', { timeout: 6000 }).catch(() => undefined);
+      await page.waitForTimeout(500);
     }
 
     selectedPageIndex = pages().indexOf(page);
     const snapshot = await snapshotPage(page);
+    const model = buildSemanticModel(snapshot);
     res.json({
       ok: true,
       index: selectedPageIndex,
       title: await page.title(),
       url: page.url(),
       snapshot,
-      semanticObjects: buildSemanticObjects(snapshot)
+      ...model
     });
   } catch (error) {
     res.status(500).json({ ok: false, error: String(error) });
