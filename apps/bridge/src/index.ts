@@ -1,4 +1,4 @@
-import express from 'express';
+﻿import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, BrowserContext, Page } from 'playwright';
@@ -243,7 +243,7 @@ function buildGenericObjects(snapshot: Snapshot): SemanticObject[] {
 
   const primaryHeading = headings.find(element => element.tag === 'h1') ?? headings[0];
   const primaryParagraph = paragraphs[0];
-  const primaryActions = links.slice(0, 4).map(actionFromElement).filter((action): action is SemanticAction => Boolean(action));
+  const primaryActions = links.slice(0, 4).map(element => actionFromElement(element)).filter((action): action is SemanticAction => Boolean(action));
 
   if (primaryHeading || primaryParagraph || snapshot.title) {
     const sourceElements = [primaryHeading, primaryParagraph, ...links.slice(0, 4)].filter((element): element is RawElement => Boolean(element));
@@ -287,7 +287,7 @@ function buildGenericObjects(snapshot: Snapshot): SemanticObject[] {
       label: 'Form',
       title: fields.length === 1 ? fields[0] : `${fields.length} fields`,
       items: fields,
-      actions: formButtons.map(actionFromElement).filter((action): action is SemanticAction => Boolean(action)),
+      actions: formButtons.map(element => actionFromElement(element)).filter((action): action is SemanticAction => Boolean(action)),
       provenance: provenance(snapshot, sourceElements)
     });
   }
@@ -302,7 +302,7 @@ function buildGenericObjects(snapshot: Snapshot): SemanticObject[] {
       label: 'Navigation',
       title: `${navigationLinks.length} links`,
       items: navigationLinks.map(element => element.text),
-      actions: navigationLinks.map(actionFromElement).filter((action): action is SemanticAction => Boolean(action)),
+      actions: navigationLinks.map(element => actionFromElement(element)).filter((action): action is SemanticAction => Boolean(action)),
       provenance: provenance(snapshot, navigationLinks)
     });
   }
@@ -325,7 +325,7 @@ function buildGenericObjects(snapshot: Snapshot): SemanticObject[] {
     type: 'document',
     label: 'Document',
     title: snapshot.title || snapshot.url,
-    text: elements.slice(0, 6).map(element => element.text).filter(Boolean).join(' · '),
+    text: elements.slice(0, 6).map(element => element.text).filter(Boolean).join(' Â· '),
     actions: [],
     provenance: provenance(snapshot, elements.slice(0, 6))
   }];
@@ -498,3 +498,4 @@ const port = 4318;
 app.listen(port, '127.0.0.1', () => {
   console.log(`AI Semantic Canvas bridge listening on http://127.0.0.1:${port}`);
 });
+
