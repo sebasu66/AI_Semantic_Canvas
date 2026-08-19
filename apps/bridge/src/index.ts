@@ -68,6 +68,9 @@ type SemanticObject = {
   description?: string;
   text?: string;
   items?: string[];
+  imageUrl?: string;
+  representation?: 'data' | 'live-region' | 'hybrid';
+  regionSelector?: string;
   actions: SemanticAction[];
   provenance: {
     url: string;
@@ -444,9 +447,20 @@ async function semanticModelForProviderTarget(
     try {
       const execution = await executeSiteRecipe(provider, targetId, recipe);
       if (execution.healthy && execution.semanticObjects.length) {
+        const enriched = await Promise.all(execution.semanticObjects.map(async object => {
+          if ((object.representation === 'live-region' || object.representation === 'hybrid') && object.regionSelector && provider.captureRegion) {
+            try {
+              const imageUrl = await provider.captureRegion(targetId, object.regionSelector);
+              if (imageUrl) return { ...object, imageUrl };
+            } catch {
+              // Visual preview is best-effort; semantic data remains valid.
+            }
+          }
+          return object;
+        }));
         return {
           sourceKind: sourceKindForUrl(snapshot.url),
-          semanticObjects: execution.semanticObjects as SemanticObject[],
+          semanticObjects: enriched as SemanticObject[],
           recipe: {
             status: 'hit',
             recipeId: execution.recipeId,

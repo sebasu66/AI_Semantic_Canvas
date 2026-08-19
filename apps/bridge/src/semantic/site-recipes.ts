@@ -74,6 +74,7 @@ export type RecipeSemanticObject = {
   label: string;
   representation?: 'data' | 'live-region' | 'hybrid';
   regionSelector?: string;
+  imageUrl?: string;
   title?: string;
   description?: string;
   text?: string;

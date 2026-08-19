@@ -154,6 +154,32 @@ return r.result?.value;
 `);
   }
 
+  async captureRegion(targetId: string, selector: string): Promise<string | null> {
+    const tid = JSON.stringify(targetId);
+    const selectorLiteral = JSON.stringify(selector);
+    const expression = `(() => {
+      const el = document.querySelector(${selectorLiteral});
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return {
+        x: Math.max(0, r.left + scrollX),
+        y: Math.max(0, r.top + scrollY),
+        width: Math.max(1, Math.min(r.width, 1400)),
+        height: Math.max(1, Math.min(r.height, 900)),
+      };
+    })()`;
+    const expr = JSON.stringify(expression);
+    return await this.eval<string | null>(`
+await session.use(${tid});
+await session.Page.enable();
+const rr=await session.Runtime.evaluate({expression:${expr},returnByValue:true});
+const clip=rr?.result?.value;
+if(!clip || clip.width < 2 || clip.height < 2) return null;
+const shot=await session.Page.captureScreenshot({format:'jpeg',quality:78,fromSurface:true,captureBeyondViewport:true,clip:{x:clip.x,y:clip.y,width:clip.width,height:clip.height,scale:1}});
+return shot?.data ? 'data:image/jpeg;base64,' + shot.data : null;
+`, 45_000);
+  }
+
   async closeTarget(targetId: string): Promise<void> {
     const tid = JSON.stringify(targetId);
     await this.eval(`await session.Target.closeTarget({targetId:${tid}})`);

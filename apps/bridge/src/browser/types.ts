@@ -31,6 +31,7 @@ export interface BrowserProvider {
   open(url: string): Promise<BrowserTarget>;
   navigate(targetId: string, url: string): Promise<BrowserTarget>;
   evaluate<T = unknown>(targetId: string, expression: string): Promise<T>;
+  captureRegion?(targetId: string, selector: string): Promise<string | null>;
   closeTarget?(targetId: string): Promise<void>;
   dispose?(): Promise<void>;
 }

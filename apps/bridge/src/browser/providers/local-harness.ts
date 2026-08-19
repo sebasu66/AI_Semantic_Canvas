@@ -129,6 +129,11 @@ export class LocalHarnessProvider implements BrowserProvider {
     return await this.repl.evaluate<T>(targetId, expression);
   }
 
+  async captureRegion(targetId: string, selector: string): Promise<string | null> {
+    await this.ensureConnected();
+    return await this.repl.captureRegion(targetId, selector);
+  }
+
   async closeTarget(targetId: string): Promise<void> {
     await this.ensureConnected();
     await this.repl.closeTarget(targetId);
