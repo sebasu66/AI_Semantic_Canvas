@@ -47,7 +47,7 @@ export class LocalHarnessProvider implements BrowserProvider {
 
     const args = [
       `--user-data-dir=${this.profileDir}`,
-      '--remote-debugging-port=9223',
+      '--remote-debugging-port=0',
       '--no-first-run',
       '--no-default-browser-check',
       ...(this.launchConfig.args ?? []),
