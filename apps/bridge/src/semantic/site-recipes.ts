@@ -11,8 +11,10 @@ export type RecipeField = {
 };
 
 export type RecipeValue = {
+  static?: string;
   selector?: string;
   attribute?: string;
+  property?: 'value' | 'textContent' | 'currentSrc' | 'poster';
   fallback?: string;
   maxLength?: number;
 };
@@ -29,6 +31,7 @@ export type SiteWidgetRecipe = {
   id: string;
   type: string;
   label: string;
+  representation?: 'data' | 'live-region' | 'hybrid';
   root?: string;
   title?: RecipeValue;
   description?: RecipeValue;
@@ -69,6 +72,8 @@ export type RecipeSemanticObject = {
   id: string;
   type: string;
   label: string;
+  representation?: 'data' | 'live-region' | 'hybrid';
+  regionSelector?: string;
   title?: string;
   description?: string;
   text?: string;
@@ -215,9 +220,13 @@ export async function executeSiteRecipe(
     const clean = (v, max=240) => String(v || '').replace(/\\s+/g, ' ').trim().slice(0, max);
     const readValue = (scope, spec) => {
       if (!spec) return '';
+      if (spec.static) return clean(spec.static, spec.maxLength || 240);
       const el = spec.selector ? scope.querySelector(spec.selector) : scope;
       if (!el) return spec.fallback || '';
-      const raw = spec.attribute ? el.getAttribute(spec.attribute) : (el.innerText || el.getAttribute('aria-label') || el.getAttribute('title') || '');
+      let raw = '';
+      if (spec.attribute) raw = el.getAttribute(spec.attribute) || '';
+      else if (spec.property && ['value','textContent','currentSrc','poster'].includes(spec.property)) raw = el[spec.property] || '';
+      else raw = el.innerText || el.getAttribute('aria-label') || el.getAttribute('title') || '';
       return clean(raw, spec.maxLength || 240) || spec.fallback || '';
     };
     const objects = [];
@@ -292,6 +301,8 @@ export async function executeSiteRecipe(
         id: widget.id,
         type: widget.type,
         label: widget.label,
+        representation: widget.representation || 'data',
+        ...(widget.representation === 'live-region' || widget.representation === 'hybrid' ? { regionSelector: widget.root || 'body' } : {}),
         ...(title ? { title } : {}),
         ...(description ? { description } : {}),
         ...(items.length ? { items } : {}),
