@@ -57,8 +57,6 @@ export function createBrowserRegistry(repoRoot: string): BrowserProviderRegistry
   }));
 
   registry.register(new CloudBrowserUseProvider({
-    repoRoot,
-    replPort: 9880,
     apiKey: process.env.BROWSER_USE_API_KEY,
     proxyCountryCode: process.env.BROWSER_USE_PROXY_COUNTRY || undefined,
   }));
