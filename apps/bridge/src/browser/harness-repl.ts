@@ -112,9 +112,11 @@ export class HarnessReplClient {
     return await this.eval<HarnessTarget[]>('await listPageTargets()') ?? [];
   }
 
-  async createTarget(url: string): Promise<string> {
+  async createTarget(url = 'about:blank', background = true): Promise<string> {
     const escaped = JSON.stringify(url);
-    const result = await this.eval<{ targetId: string }>(`await session.Target.createTarget({url:${escaped}})`);
+    const result = await this.eval<{ targetId: string }>(
+      `await session.Target.createTarget({url:${escaped},background:${background ? 'true' : 'false'}})`
+    );
     if (!result?.targetId) throw new Error('Browser Harness did not return a targetId');
     return result.targetId;
   }
@@ -126,11 +128,17 @@ export class HarnessReplClient {
 await session.use(${tid});
 await session.Page.enable();
 await session.Page.navigate({url:${href}});
-for (let i=0;i<40;i++) {
-  const r=await session.Runtime.evaluate({expression:'document.readyState',returnByValue:true});
-  if (r?.result?.value === 'interactive' || r?.result?.value === 'complete') break;
+for (let i=0;i<80;i++) {
+  const r=await session.Runtime.evaluate({expression:'document.readyState + "|" + location.href + "|" + document.body.innerText.length',returnByValue:true});
+  const value=String(r?.result?.value || '');
+  const parts=value.split('|');
+  const ready=parts[0];
+  const current=parts[1] || '';
+  const textSize=Number(parts[2] || 0);
+  if ((ready === 'interactive' || ready === 'complete') && current !== 'about:blank' && textSize > 40) break;
   await Bun.sleep(250);
 }
+await Bun.sleep(500);
 return true;
 `);
   }
