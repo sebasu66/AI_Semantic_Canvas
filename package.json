@@ -1,0 +1,15 @@
+{
+  "name": "ai-semantic-canvas",
+  "private": true,
+  "version": "0.0.1",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n bridge,web \"npm run dev -w @asc/bridge\" \"npm run dev -w @asc/web\"",
+    "build": "npm run build -w @asc/bridge && npm run build -w @asc/web"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

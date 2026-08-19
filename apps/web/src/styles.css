@@ -1,0 +1,38 @@
+:root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; color: #e7ebf1; background: #090b0f; font-synthesis: none; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 100vw; min-height: 100vh; overflow: hidden; }
+button { font: inherit; }
+.app { display: grid; grid-template-columns: 290px 1fr; height: 100vh; background: #090b0f; }
+.sidebar { position: relative; z-index: 3; padding: 22px 18px; background: rgba(13,16,22,.97); border-right: 1px solid #242a35; box-shadow: 8px 0 32px rgba(0,0,0,.18); }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 750; letter-spacing: -.02em; font-size: 18px; }
+.orb { width: 13px; height: 13px; border-radius: 999px; background: #8cf5d5; box-shadow: 0 0 22px rgba(140,245,213,.45); }
+.muted { color: #8993a3; font-size: 12px; line-height: 1.5; margin: 8px 0 20px; }
+.stack { display: grid; gap: 8px; }
+.stack button { border: 1px solid #303846; color: #dbe2ec; background: #171c25; border-radius: 10px; padding: 10px 12px; text-align: left; cursor: pointer; }
+.stack button:hover { background: #1e2530; border-color: #49566a; }
+.stack button.primary { background: #dfe9ff; color: #111722; border-color: #dfe9ff; font-weight: 700; }
+.sectionTitle { margin: 22px 0 8px; font-size: 11px; color: #727e91; text-transform: uppercase; letter-spacing: .12em; }
+.tabs { display: grid; gap: 6px; max-height: 45vh; overflow: auto; }
+.tab { display: grid; gap: 3px; text-align: left; border: 1px solid transparent; background: transparent; color: #bcc5d2; padding: 9px 10px; border-radius: 9px; cursor: pointer; }
+.tab strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; }
+.tab span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #687386; font-size: 10px; }
+.tab:hover, .tab.active { background: #151a22; border-color: #2d3542; }
+.status { position: absolute; bottom: 18px; left: 18px; right: 18px; color: #8390a2; font-size: 11px; border-top: 1px solid #242a35; padding-top: 12px; }
+.canvas { position: relative; overflow: auto; min-width: 0; background-color: #0c1016; background-image: linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px); background-size: 28px 28px; min-height: 100vh; }
+.canvas::after { content: ''; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(circle at 50% 15%, rgba(109,132,255,.08), transparent 38%); }
+.canvasHeader { position: sticky; top: 0; z-index: 2; height: 76px; display: flex; justify-content: space-between; align-items: center; padding: 14px 24px; background: rgba(12,16,22,.88); border-bottom: 1px solid #202735; backdrop-filter: blur(14px); }
+.canvasHeader div:first-child { display: grid; gap: 4px; min-width: 0; }
+.canvasHeader strong { font-size: 14px; }
+.canvasHeader span { max-width: 700px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #768296; font-size: 11px; }
+.badge { border: 1px solid #2e3948; border-radius: 999px; padding: 6px 10px; color: #98a4b5; font-size: 11px; }
+.semanticCard { position: absolute; z-index: 1; width: 225px; min-height: 105px; padding: 13px; border-radius: 14px; background: rgba(24,29,38,.94); border: 1px solid #343d4c; box-shadow: 0 12px 28px rgba(0,0,0,.22); cursor: grab; user-select: none; touch-action: none; }
+.semanticCard:active { cursor: grabbing; border-color: #71829a; box-shadow: 0 18px 40px rgba(0,0,0,.35); }
+.cardMeta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; color: #89dfc8; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+.cardMeta code { color: #606c7f; }
+.cardText { color: #e4e9f0; font-size: 12px; line-height: 1.42; max-height: 52px; overflow: hidden; }
+.cardBox { margin-top: 10px; color: #5f6a7a; font-size: 9px; }
+.empty { position: absolute; left: 50%; top: 46%; transform: translate(-50%, -50%); width: min(560px, 70%); text-align: center; color: #e2e8f0; }
+.emptyIcon { font-size: 52px; color: #89dfc8; margin-bottom: 10px; }
+.empty h1 { margin: 0 0 10px; font-size: clamp(26px, 4vw, 48px); letter-spacing: -.045em; }
+.empty p { margin: 0 auto; max-width: 520px; color: #7e8a9c; line-height: 1.65; }
+@media (max-width: 900px) { .app { grid-template-columns: 230px 1fr; } .sidebar { padding-inline: 12px; } }
