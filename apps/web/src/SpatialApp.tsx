@@ -25,8 +25,10 @@ type SemanticObject = {
 };
 type WorkspaceSource = {
   id:string; providerId?:BrowserProviderId; targetId?:string; providerLabel?:string;
-  title:string; url:string; kind:SourceKind; updatedAt:number;
+  title:string; url:string; kind:SourceKind; updatedAt:number; version:number;
 };
+type PresenceTone = 'live'|'local'|'off';
+type PresenceItem = { label:string; state:string; tone:PresenceTone };
 type SnapshotResponse = { ok:true; snapshot:Snapshot; semanticObjects:SemanticObject[]; sourceKind:Exclude<SourceKind,'local-image'>; recipe?:{status:string;recipeId?:string;score?:number} };
 type OpenResponse = SnapshotResponse & { target:BrowserTarget };
 type ActionResponse = SnapshotResponse & { targetId:string };
@@ -52,6 +54,29 @@ function providerShortLabel(id?:BrowserProviderId){ if(id==='chrome-personal')re
 function kindLabel(kind:SourceKind){ if(kind==='gmail')return 'Gmail'; if(kind==='gdrive')return 'Drive'; if(kind==='google-search')return 'Search'; if(kind==='local-image')return 'Image'; return 'Web'; }
 function autoProviderFor(urlValue:string):BrowserProviderId{ try{const host=new URL(urlValue).hostname.toLowerCase();if(host==='mail.google.com'||host==='drive.google.com')return 'chrome-personal';}catch{} return 'edge-worker'; }
 function iconFor(kind:SourceKind){ if(kind==='gmail')return '✉'; if(kind==='gdrive')return '◇'; if(kind==='google-search')return '⌕'; if(kind==='local-image')return '▣'; return '◎'; }
+function presenceFor(source:WorkspaceSource):PresenceItem[]{
+  if(source.kind==='local-image')return [{label:'Local',state:'SESSION',tone:'local'},{label:'Cloud',state:'NOT STORED',tone:'off'}];
+  const result:PresenceItem[]=[{label:'Web',state:'LIVE',tone:'live'},{label:'Local',state:'SESSION',tone:'local'}];
+  result.push(source.providerId==='cloud-browser-use'?{label:'Cloud',state:'RUNTIME',tone:'live'}:{label:'Cloud',state:'NOT STORED',tone:'off'});
+  return result;
+}
+function capabilitiesFor(source:WorkspaceSource,objects:SemanticObject[]):string[]{
+  const caps=['semantic','snapshot','spatial'];
+  if(source.kind!=='local-image')caps.push('live-source','observable');
+  if(objects.some(o=>o.actions.length))caps.push('actions');
+  if(source.providerId==='chrome-personal')caps.push('authenticated');
+  if(source.providerId==='cloud-browser-use')caps.push('cloud-runtime');
+  if(source.kind==='local-image')caps.push('local-source');
+  return caps;
+}
+function ObjectMetaHover({source,objects}:{source:WorkspaceSource;objects:SemanticObject[]}){
+  const presence=presenceFor(source);
+  const caps=capabilitiesFor(source,objects);
+  return <div className="objectMetaHover">
+    <div className="presenceRow">{presence.map(item=><span key={item.label} className={`presenceChip ${item.tone}`}><i/>{item.label}<b>{item.state}</b></span>)}</div>
+    <div className="capabilityRow"><strong>v{source.version}</strong>{caps.map(cap=><span key={cap}>{cap}</span>)}</div>
+  </div>;
+}
 
 function loadLayout():StoredLayout{
   try{ const raw=localStorage.getItem(LAYOUT_KEY); if(raw)return JSON.parse(raw) as StoredLayout; }catch{}
@@ -142,6 +167,7 @@ function SpreadContent({source,objects,mode,busy,onAction,onMode,onFocus,onDock,
       </div></div>
       <div className="minimalHero"><PrimaryVisual object={primary}/></div>
       <div className="minimalCaption"><strong>{primary.title||source.title}</strong><span>{itemCount?`${itemCount} items`:primary.label}</span></div>
+      <ObjectMetaHover source={source} objects={objects}/>
     </div>;
   }
 
@@ -157,6 +183,7 @@ function SpreadContent({source,objects,mode,busy,onAction,onMode,onFocus,onDock,
       </nav>
     </header>
 
+    <ObjectMetaHover source={source} objects={objects}/>
     <div className="editorialGrid">
       <section className="heroRegion">
         <div className="heroVisual"><PrimaryVisual object={primary}/></div>
@@ -175,7 +202,7 @@ function SpreadContent({source,objects,mode,busy,onAction,onMode,onFocus,onDock,
       </aside>
 
       <footer className="spreadFooter">
-        <div className="spreadStats"><span><b>{objects.length}</b> regions</span><span><b>{itemCount}</b> items</span><span>{primary.representation||'data'}</span></div>
+        <div className="spreadStats"><span><b>{objects.length}</b> regions</span><span><b>{itemCount}</b> items</span><span>{primary.representation||'data'}</span><span>v{source.version}</span></div>
         <div className="spreadActions">{primary.actions.slice(0,4).map(action=><button key={action.id} disabled={busy} onClick={()=>onAction(action)}>{action.label}<i>↗</i></button>)}</div>
       </footer>
     </div>
@@ -230,8 +257,9 @@ export default function SpatialApp(){
   function upsertSource(sourceId:string,providerId:BrowserProviderId,targetId:string,data:SnapshotResponse,isNew:boolean,providerLabel?:string){
     setSourceObjects(prev=>({...prev,[sourceId]:data.semanticObjects}));
     setSources(prev=>{
-      const next:WorkspaceSource={id:sourceId,providerId,targetId,providerLabel:providerLabel||providerShortLabel(providerId),title:data.snapshot.title||data.snapshot.url,url:data.snapshot.url,kind:data.sourceKind,updatedAt:Date.now()};
       const index=prev.findIndex(s=>s.id===sourceId);
+      const previous=index>=0?prev[index]:undefined;
+      const next:WorkspaceSource={id:sourceId,providerId,targetId,providerLabel:providerLabel||providerShortLabel(providerId),title:data.snapshot.title||data.snapshot.url,url:data.snapshot.url,kind:data.sourceKind,updatedAt:Date.now(),version:(previous?.version||0)+1};
       if(index<0)return[...prev,next];const copy=[...prev];copy[index]=next;return copy;
     });
     if(isNew)ensureSpread(sourceId,sources.length);
@@ -259,7 +287,7 @@ export default function SpatialApp(){
   function setMode(sourceId:string,mode:SpreadMode){setSpreads(p=>({...p,[sourceId]:{...(p[sourceId]||{x:200,y:200}),mode}}));if(mode!=='docked')setActiveSourceId(sourceId);}
   function togglePin(sourceId:string){setSpreads(p=>({...p,[sourceId]:{...(p[sourceId]||{x:200,y:200,mode:'composition'}),pinned:!p[sourceId]?.pinned}}));}
 
-  function addLocalImage(event:ChangeEvent<HTMLInputElement>){const file=event.target.files?.[0];event.target.value='';if(!file)return;const id=`local-image-${Date.now()}`;const imageUrl=URL.createObjectURL(file);const source:WorkspaceSource={id,title:file.name,url:`local-file://${file.name}`,kind:'local-image',updatedAt:Date.now()};const object:SemanticObject={id:'image-primary',type:'image',label:'Image',title:file.name,description:`${Math.round(file.size/1024)} KB`,imageUrl,actions:[],provenance:{url:source.url,pageTitle:file.name,elementIds:[],boxes:[]}};setSources(p=>[...p,source]);setSourceObjects(p=>({...p,[id]:[object]}));ensureSpread(id,sources.length);}
+  function addLocalImage(event:ChangeEvent<HTMLInputElement>){const file=event.target.files?.[0];event.target.value='';if(!file)return;const id=`local-image-${Date.now()}`;const imageUrl=URL.createObjectURL(file);const source:WorkspaceSource={id,title:file.name,url:`local-file://${file.name}`,kind:'local-image',updatedAt:Date.now(),version:1};const object:SemanticObject={id:'image-primary',type:'image',label:'Image',title:file.name,description:`${Math.round(file.size/1024)} KB`,imageUrl,actions:[],provenance:{url:source.url,pageTitle:file.name,elementIds:[],boxes:[]}};setSources(p=>[...p,source]);setSourceObjects(p=>({...p,[id]:[object]}));ensureSpread(id,sources.length);}
 
   function dragStart(event:ReactPointerEvent,sourceId:string){if((event.target as HTMLElement).closest('button'))return;const spread=spreads[sourceId];if(!spread)return;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);drag.current={sourceId,dx:event.clientX-spread.x,dy:event.clientY-spread.y};}
   function dragMove(event:ReactPointerEvent){if(!drag.current)return;const d=drag.current;setSpreads(p=>({...p,[d.sourceId]:{...p[d.sourceId],x:Math.max(40,event.clientX-d.dx),y:Math.max(100,event.clientY-d.dy)}}));}
