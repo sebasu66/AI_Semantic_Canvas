@@ -2,8 +2,8 @@ import fs from 'node:fs';
 
 const appPath = 'apps/web/src/SpatialApp.tsx';
 const cssPath = 'apps/web/src/spatial.css';
-let app = fs.readFileSync(appPath, 'utf8');
-let css = fs.readFileSync(cssPath, 'utf8');
+let app = fs.readFileSync(appPath, 'utf8').replace(/\r\n/g, '\n');
+let css = fs.readFileSync(cssPath, 'utf8').replace(/\r\n/g, '\n');
 
 function replaceOnce(from, to, label) {
   if (!app.includes(from)) throw new Error(`Missing anchor: ${label}`);
