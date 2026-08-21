@@ -446,6 +446,90 @@ async function snapshotProviderTarget(provider: BrowserProvider, targetId: strin
 }
 
 
+async function extractGmailProviderModel(
+  provider: BrowserProvider,
+  targetId: string,
+  snapshot: Snapshot,
+): Promise<SemanticModel | null> {
+  const expression = `(() => {
+    const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+    const visible = (el) => {
+      const r = el.getBoundingClientRect();
+      const s = getComputedStyle(el);
+      return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+    };
+    return Array.from(document.querySelectorAll('tr.zA'))
+      .filter(visible)
+      .slice(0, 30)
+      .map((row, itemIndex) => {
+        const sender = clean(row.querySelector('.yP')?.textContent || row.querySelector('.zF')?.textContent || row.querySelector('.bA4')?.textContent);
+        const subject = clean(row.querySelector('.bog')?.textContent || row.querySelector('.y6')?.textContent);
+        const snippet = clean(row.querySelector('.y2')?.textContent).replace(/^[\\s\-\u2013\u2014\u00b7]+/, '');
+        const dateNode = row.querySelector('.xW span[title], .xW span[aria-label], .xW');
+        const date = clean(dateNode?.getAttribute?.('title') || dateNode?.getAttribute?.('aria-label') || dateNode?.textContent);
+        const rect = row.getBoundingClientRect();
+        return {
+          itemIndex,
+          sender,
+          subject,
+          snippet,
+          date,
+          unread: row.classList.contains('zE'),
+          bbox: [Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), Math.round(rect.height)],
+        };
+      })
+      .filter(item => item.sender || item.subject || item.snippet);
+  })()`;
+
+  const rows = await provider.evaluate<Array<{
+    itemIndex: number; sender: string; subject: string; snippet: string; date: string; unread: boolean; bbox: number[];
+  }>>(targetId, expression);
+
+  console.log('[semantic-gmail]', JSON.stringify({
+    ts: new Date().toISOString(),
+    stage: 'extract',
+    providerId: provider.id,
+    targetId,
+    url: snapshot.url,
+    rowCount: rows?.length || 0,
+    sample: (rows || []).slice(0, 3).map(row => ({ sender: row.sender, subject: row.subject, date: row.date, unread: row.unread })),
+  }));
+
+  if (!rows?.length) return null;
+
+  const items = rows.map(row => {
+    const core = [row.sender, row.subject, row.snippet].filter(Boolean).join(' — ');
+    return row.date ? `${core} · ${row.date}` : core;
+  });
+  const actions: SemanticAction[] = rows.map(row => ({
+    id: `gmail-open-${row.itemIndex}`,
+    kind: 'click',
+    label: `Open ${[row.sender, row.subject].filter(Boolean).join(': ')}`,
+    selector: 'tr.zA',
+    itemIndex: row.itemIndex,
+  }));
+
+  return {
+    sourceKind: 'gmail',
+    semanticObjects: [{
+      id: 'gmail-inbox-live',
+      type: 'mail-list',
+      label: 'Inbox',
+      title: snapshot.title || 'Inbox',
+      description: `${rows.length} conversaciones visibles`,
+      items,
+      actions,
+      provenance: {
+        url: snapshot.url,
+        pageTitle: snapshot.title,
+        elementIds: rows.map(row => `tr.zA:${row.itemIndex}`),
+        boxes: rows.map(row => row.bbox),
+      },
+    }],
+  };
+}
+
+
 type RecipeState = {
   status: 'hit' | 'miss' | 'stale';
   recipeId?: string;
@@ -460,6 +544,21 @@ async function semanticModelForProviderTarget(
   targetId: string,
   snapshot: Snapshot,
 ): Promise<SemanticModel & { recipe: RecipeState }> {
+  if (sourceKindForUrl(snapshot.url) === 'gmail') {
+    try {
+      const gmailModel = await extractGmailProviderModel(provider, targetId, snapshot);
+      if (gmailModel) {
+        return {
+          ...gmailModel,
+          recipe: { status: 'hit', recipeId: 'builtin-gmail-dom-v2', score: 1, diagnostics: [] },
+        };
+      }
+      console.warn('[semantic-gmail]', JSON.stringify({ ts: new Date().toISOString(), stage: 'empty', providerId: provider.id, targetId, url: snapshot.url }));
+    } catch (error) {
+      console.error('[semantic-gmail]', JSON.stringify({ ts: new Date().toISOString(), stage: 'error', providerId: provider.id, targetId, url: snapshot.url, error: String(error) }));
+    }
+  }
+
   const recipe = await siteRecipeStore.find(snapshot.url);
   if (recipe) {
     try {
