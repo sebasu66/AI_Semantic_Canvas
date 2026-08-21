@@ -166,24 +166,24 @@ function sourceKindForUrl(urlValue: string): SemanticModel['sourceKind'] {
 }
 
 function buildGmailObjects(snapshot: Snapshot): SemanticObject[] {
-  const rowCandidates = uniqueElements(snapshot.elements.filter(element =>
-    (element.tag === 'tr' || element.role === 'row') &&
-    element.text.length >= 8 &&
-    element.text.length <= 360
-  )).slice(0, 12);
+  const rowCandidates = uniqueElements(snapshot.elements.filter(element => {
+    const [, , width = 0, height = 0] = element.bbox;
+    const rowLike = element.tag === 'tr' || element.role === 'row';
+    return rowLike && element.text.length >= 8 && element.text.length <= 620 && width >= 280 && height >= 18 && height <= 140;
+  })).slice(0, 30);
 
   if (!rowCandidates.length) return [];
   const actions = rowCandidates
-    .map(element => actionFromElement(element, element.text.slice(0, 72)))
+    .map(element => actionFromElement(element, element.text.slice(0, 96)))
     .filter((action): action is SemanticAction => Boolean(action));
 
   return [{
     id: 'gmail-inbox-visible',
     type: 'mail-list',
-    label: 'Gmail',
+    label: 'Inbox',
     title: snapshot.title || 'Inbox',
-    description: `${rowCandidates.length} visible conversations`,
-    items: rowCandidates.map(element => element.text.slice(0, 150)),
+    description: `${rowCandidates.length} conversaciones visibles`,
+    items: rowCandidates.map(element => element.text.slice(0, 360)),
     actions,
     provenance: provenance(snapshot, rowCandidates)
   }];
@@ -354,7 +354,7 @@ function buildSemanticModel(snapshot: Snapshot): SemanticModel {
 async function snapshotPage(page: Page): Promise<Snapshot> {
   return page.evaluate((selector) => {
     const candidates = Array.from(document.querySelectorAll(selector));
-    const elements = candidates.slice(0, 700).map((el, sourceIndex) => {
+    const elements = candidates.slice(0, 5000).map((el, sourceIndex) => {
       const node = el as HTMLElement;
       const rect = node.getBoundingClientRect();
       const style = getComputedStyle(node);
@@ -376,7 +376,7 @@ async function snapshotPage(page: Page): Promise<Snapshot> {
         visible: rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none',
         bbox: [Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), Math.round(rect.height)]
       };
-    }).filter(element => element.visible && (element.text || ['input', 'select', 'textarea', 'button', 'a'].includes(element.tag)));
+    }).filter(element => element.visible && (element.text || ['input', 'select', 'textarea', 'button', 'a'].includes(element.tag))).slice(0, 1400);
 
     return {
       title: document.title,
@@ -388,12 +388,30 @@ async function snapshotPage(page: Page): Promise<Snapshot> {
 }
 
 
+async function waitForSemanticContent(provider: BrowserProvider, targetId: string, urlValue: string): Promise<void> {
+  const kind = sourceKindForUrl(urlValue);
+  if (kind !== 'gmail' && kind !== 'gdrive') return;
+  const selector = kind === 'gmail'
+    ? 'tr[data-legacy-thread-id], tr.zA, [role="row"]'
+    : '[role="gridcell"], [role="row"], [role="listitem"]';
+  const encodedSelector = JSON.stringify(selector);
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    try {
+      const count = await provider.evaluate<number>(targetId, `(() => Array.from(document.querySelectorAll(${encodedSelector})).filter(el => { const r=el.getBoundingClientRect(); const s=getComputedStyle(el); return r.width>0 && r.height>0 && s.display!=='none' && s.visibility!=='hidden'; }).length)()`);
+      if (Number(count) >= 3) return;
+    } catch {
+      // SPA readiness is best-effort; semantic snapshot still has a generic fallback.
+    }
+    await new Promise(resolve => setTimeout(resolve, 300));
+  }
+}
+
 async function snapshotProviderTarget(provider: BrowserProvider, targetId: string): Promise<Snapshot> {
   const selectorLiteral = JSON.stringify(SEMANTIC_SELECTOR);
   const expression = `(() => {
     const selector = ${selectorLiteral};
     const candidates = Array.from(document.querySelectorAll(selector));
-    const elements = candidates.slice(0, 700).map((el, sourceIndex) => {
+    const elements = candidates.slice(0, 5000).map((el, sourceIndex) => {
       const node = el;
       const rect = node.getBoundingClientRect();
       const style = getComputedStyle(node);
@@ -416,7 +434,7 @@ async function snapshotProviderTarget(provider: BrowserProvider, targetId: strin
         visible: rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none',
         bbox: [Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), Math.round(rect.height)]
       };
-    }).filter(element => element.visible && (element.text || ['input','select','textarea','button','a'].includes(element.tag)));
+    }).filter(element => element.visible && (element.text || ['input','select','textarea','button','a'].includes(element.tag))).slice(0, 1400);
     return {
       title: document.title,
       url: location.href,
@@ -624,6 +642,7 @@ app.post('/api/providers/:providerId/open', async (req, res) => {
     const provider = browserRegistry.get(String(req.params.providerId));
     const url = String(req.body?.url || 'https://example.com');
     const target = await provider.open(url);
+    await waitForSemanticContent(provider, target.targetId, url);
     const snapshot = await snapshotProviderTarget(provider, target.targetId);
     const model = await semanticModelForProviderTarget(provider, target.targetId, snapshot);
     res.json({ ok: true, target, snapshot, ...model });

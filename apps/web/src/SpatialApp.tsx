@@ -141,10 +141,15 @@ function rankObject(object:SemanticObject){
   return 30;
 }
 
-function PrimaryVisual({object}:{object:SemanticObject}){
+function PrimaryVisual({object,onAction,busy}:{object:SemanticObject;onAction:(a:SemanticAction)=>void;busy:boolean}){
   if(object.imageUrl) return <img className="heroImage" src={object.imageUrl} alt={object.title||object.label} draggable={false}/>;
   if(object.type==='mail-list'||object.type==='drive-grid'||object.type==='search-results'){
-    return <div className="heroList">{(object.items||[]).slice(0,7).map((item,i)=><div key={i}><span>{String(i+1).padStart(2,'0')}</span><p>{item}</p></div>)}</div>;
+    return <div className={`heroList heroList-${object.type}`}>{(object.items||[]).slice(0,14).map((item,i)=>{
+      const action=object.actions[i];
+      return <button className="heroListRow" key={i} disabled={busy&&!action} onClick={()=>action&&onAction(action)} title={action?.label||String(item)}>
+        <span>{String(i+1).padStart(2,'0')}</span><p>{item}</p><i>{action?'›':''}</i>
+      </button>;
+    })}</div>;
   }
   return <div className="heroType"><strong>{object.title||object.label}</strong><p>{object.description||object.text||'Semantic source'}</p></div>;
 }
@@ -165,7 +170,7 @@ function SpreadContent({source,objects,mode,busy,onAction,onMode,onFocus,onDock,
         <button onClick={onMode.bind(null,'composition')} title="Composition">◫</button>
         <button onClick={onFocus} title="Focus">⛶</button><button onClick={onDock} title="Minimize">–</button>
       </div></div>
-      <div className="minimalHero"><PrimaryVisual object={primary}/></div>
+      <div className="minimalHero"><PrimaryVisual object={primary} onAction={onAction} busy={busy}/></div>
       <div className="minimalCaption"><strong>{primary.title||source.title}</strong><span>{itemCount?`${itemCount} items`:primary.label}</span></div>
       <ObjectMetaHover source={source} objects={objects}/>
     </div>;
@@ -186,12 +191,12 @@ function SpreadContent({source,objects,mode,busy,onAction,onMode,onFocus,onDock,
     <ObjectMetaHover source={source} objects={objects}/>
     <div className="editorialGrid">
       <section className="heroRegion">
-        <div className="heroVisual"><PrimaryVisual object={primary}/></div>
-        <div className="heroCopy">
+        <div className="heroVisual"><PrimaryVisual object={primary} onAction={onAction} busy={busy}/></div>
+        {!['mail-list','drive-grid','search-results'].includes(primary.type)&&<div className="heroCopy">
           <span className="eyebrow">{primary.label}</span>
           <h2>{primary.title||source.title}</h2>
           {(primary.description||primary.text)&&<p>{primary.description||primary.text}</p>}
-        </div>
+        </div>}
       </section>
 
       <aside className="editorialRail">
@@ -203,7 +208,7 @@ function SpreadContent({source,objects,mode,busy,onAction,onMode,onFocus,onDock,
 
       <footer className="spreadFooter">
         <div className="spreadStats"><span><b>{objects.length}</b> regions</span><span><b>{itemCount}</b> items</span><span>{primary.representation||'data'}</span><span>v{source.version}</span></div>
-        <div className="spreadActions">{primary.actions.slice(0,4).map(action=><button key={action.id} disabled={busy} onClick={()=>onAction(action)}>{action.label}<i>↗</i></button>)}</div>
+        <div className="spreadActions">{!['mail-list','drive-grid','search-results'].includes(primary.type)&&primary.actions.slice(0,4).map(action=><button key={action.id} disabled={busy} onClick={()=>onAction(action)}>{action.label}<i>↗</i></button>)}</div>
       </footer>
     </div>
   </div>;
