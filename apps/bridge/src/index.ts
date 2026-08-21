@@ -18,6 +18,7 @@ const SEMANTIC_SELECTOR = 'a,button,input,select,textarea,[role],[contenteditabl
 
 let context: BrowserContext | null = null;
 let selectedPageIndex = 0;
+const gmailDetailCache = new Map<string, SemanticRecord>();
 
 type RawElement = {
   id: string;
@@ -60,6 +61,18 @@ type SemanticObjectType =
   | 'drive-grid'
   | 'search-results';
 
+type SemanticRecord = {
+  id: string;
+  kind: 'mail';
+  title: string;
+  subtitle?: string;
+  preview?: string;
+  body?: string;
+  unread?: boolean;
+  fields: Record<string,string>;
+  sourceRef: { threadId: string; messageId: string; url: string };
+};
+
 type SemanticObject = {
   id: string;
   type: SemanticObjectType;
@@ -68,6 +81,7 @@ type SemanticObject = {
   description?: string;
   text?: string;
   items?: string[];
+  records?: SemanticRecord[];
   imageUrl?: string;
   representation?: 'data' | 'live-region' | 'hybrid';
   regionSelector?: string;
@@ -451,84 +465,43 @@ async function extractGmailProviderModel(
   targetId: string,
   snapshot: Snapshot,
 ): Promise<SemanticModel | null> {
-  const expression = `(() => {
-    const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
-    const visible = (el) => {
-      const r = el.getBoundingClientRect();
-      const s = getComputedStyle(el);
-      return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
-    };
-    return Array.from(document.querySelectorAll('tr.zA'))
-      .filter(visible)
-      .slice(0, 30)
-      .map((row, itemIndex) => {
-        const sender = clean(row.querySelector('.yP')?.textContent || row.querySelector('.zF')?.textContent || row.querySelector('.bA4')?.textContent);
-        const subject = clean(row.querySelector('.bog')?.textContent || row.querySelector('.y6')?.textContent);
-        const snippet = clean(row.querySelector('.y2')?.textContent).replace(/^[\\s\-\u2013\u2014\u00b7]+/, '');
-        const dateNode = row.querySelector('.xW span[title], .xW span[aria-label], .xW');
-        const date = clean(dateNode?.getAttribute?.('title') || dateNode?.getAttribute?.('aria-label') || dateNode?.textContent);
-        const rect = row.getBoundingClientRect();
-        return {
-          itemIndex,
-          sender,
-          subject,
-          snippet,
-          date,
-          unread: row.classList.contains('zE'),
-          bbox: [Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), Math.round(rect.height)],
-        };
-      })
-      .filter(item => item.sender || item.subject || item.snippet);
-  })()`;
-
-  const rows = await provider.evaluate<Array<{
-    itemIndex: number; sender: string; subject: string; snippet: string; date: string; unread: boolean; bbox: number[];
-  }>>(targetId, expression);
-
-  console.log('[semantic-gmail]', JSON.stringify({
-    ts: new Date().toISOString(),
-    stage: 'extract',
-    providerId: provider.id,
-    targetId,
-    url: snapshot.url,
-    rowCount: rows?.length || 0,
-    sample: (rows || []).slice(0, 3).map(row => ({ sender: row.sender, subject: row.subject, date: row.date, unread: row.unread })),
-  }));
-
-  if (!rows?.length) return null;
-
-  const items = rows.map(row => {
-    const core = [row.sender, row.subject, row.snippet].filter(Boolean).join(' — ');
-    return row.date ? `${core} · ${row.date}` : core;
-  });
-  const actions: SemanticAction[] = rows.map(row => ({
-    id: `gmail-open-${row.itemIndex}`,
-    kind: 'click',
-    label: `Open ${[row.sender, row.subject].filter(Boolean).join(': ')}`,
-    selector: 'tr.zA',
-    itemIndex: row.itemIndex,
-  }));
-
-  return {
-    sourceKind: 'gmail',
-    semanticObjects: [{
-      id: 'gmail-inbox-live',
-      type: 'mail-list',
-      label: 'Inbox',
-      title: snapshot.title || 'Inbox',
-      description: `${rows.length} conversaciones visibles`,
-      items,
-      actions,
-      provenance: {
-        url: snapshot.url,
-        pageTitle: snapshot.title,
-        elementIds: rows.map(row => `tr.zA:${row.itemIndex}`),
-        boxes: rows.map(row => row.bbox),
-      },
-    }],
-  };
+  const expression = "(() => { const clean=value=>String(value||'').replace(/\\s+/g,' ').trim(); const visible=el=>{const r=el.getBoundingClientRect();const s=getComputedStyle(el);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';}; return Array.from(document.querySelectorAll('tr.zA')).filter(visible).slice(0,10).map((row,itemIndex)=>{ const meta=row.querySelector('[data-legacy-thread-id]'); const senderNode=row.querySelector('.yP[email],.zF[email],.yP,.zF,.bA4'); const dateNode=row.querySelector('.xW span[title],.xW span[aria-label],.xW'); const rect=row.getBoundingClientRect(); return { itemIndex, threadId:meta?.getAttribute('data-legacy-thread-id')||'', messageId:meta?.getAttribute('data-legacy-last-message-id')||'', sender:clean(senderNode?.textContent), senderEmail:senderNode?.getAttribute?.('email')||'', subject:clean(row.querySelector('.bog')?.textContent||row.querySelector('.y6')?.textContent), snippet:clean(row.querySelector('.y2')?.textContent).replace(/^[\\s\\-\\u2013\\u2014\\u00b7]+/,''), date:clean(dateNode?.getAttribute?.('title')||dateNode?.getAttribute?.('aria-label')||dateNode?.textContent), unread:row.classList.contains('zE'), bbox:[Math.round(rect.x),Math.round(rect.y),Math.round(rect.width),Math.round(rect.height)] }; }).filter(row=>row.threadId&&row.messageId); })()";
+  const rows = await provider.evaluate<Array<{itemIndex:number;threadId:string;messageId:string;sender:string;senderEmail:string;subject:string;snippet:string;date:string;unread:boolean;bbox:number[]}>>(targetId, expression);
+  if(!rows?.length) return null;
+  const records: SemanticRecord[] = [];
+  for(const row of rows){
+    const cached=gmailDetailCache.get(row.messageId);
+    if(cached){records.push({...cached,unread:row.unread,preview:row.snippet||cached.preview});continue;}
+    let tempTargetId='';
+    try{
+      const temp=await provider.open('https://mail.google.com/mail/u/0/#inbox/'+row.threadId);
+      tempTargetId=temp.targetId;
+      for(let attempt=0;attempt<35;attempt+=1){
+        const ready=await provider.evaluate<number>(tempTargetId,"document.querySelectorAll('.a3s.aiL,.a3s').length");
+        if(Number(ready)>0)break;
+        await new Promise(resolve=>setTimeout(resolve,180));
+      }
+      const detailExpression = "(() => { const clean=value=>String(value||'').replace(/\\s+/g,' ').trim(); const sender=document.querySelector('.gD'); const bodies=Array.from(document.querySelectorAll('.a3s.aiL,.a3s')).filter(el=>{const r=el.getBoundingClientRect();return r.width>0&&r.height>0;}); return { subject:clean(document.querySelector('h2.hP')?.textContent), sender:clean(sender?.textContent), senderEmail:sender?.getAttribute('email')||'', date:clean(document.querySelector('.g3')?.textContent||document.querySelector('.g3')?.getAttribute('title')), recipients:clean(document.querySelector('.hb')?.textContent), body:bodies.map(el=>String(el.innerText||'').trim()).filter(Boolean).join('\\n\\n').slice(0,16000) }; })()";
+      const detail=await provider.evaluate<{subject:string;sender:string;senderEmail:string;date:string;recipients:string;body:string}>(tempTargetId,detailExpression);
+      const record:SemanticRecord={ id:row.messageId,kind:'mail',title:detail.subject||row.subject||'(sin asunto)',subtitle:[detail.sender||row.sender,detail.date||row.date].filter(Boolean).join(' · '),preview:row.snippet,body:detail.body||row.snippet,unread:row.unread,fields:{sender:detail.sender||row.sender,senderEmail:detail.senderEmail||row.senderEmail,to:detail.recipients||'',date:detail.date||row.date,threadId:row.threadId,messageId:row.messageId},sourceRef:{threadId:row.threadId,messageId:row.messageId,url:'https://mail.google.com/mail/u/0/#inbox/'+row.threadId} };
+      gmailDetailCache.set(row.messageId,record);
+      records.push(record);
+      if(row.unread){
+        try{
+          const restoreExpression="(() => { const el=Array.from(document.querySelectorAll('[data-tooltip],[aria-label]')).find(el=>/mark as unread/i.test((el.getAttribute('data-tooltip')||'')+' '+(el.getAttribute('aria-label')||''))); if(!el)return false; el.click(); return true; })()";
+          const restored=await provider.evaluate<boolean>(tempTargetId,restoreExpression);
+          console.log('[semantic-gmail]',JSON.stringify({stage:'restore-unread',messageId:row.messageId,restored:Boolean(restored)}));
+        }catch(error){console.warn('[semantic-gmail]',JSON.stringify({stage:'restore-unread-error',messageId:row.messageId,error:String(error)}));}
+      }
+    }catch(error){
+      console.warn('[semantic-gmail]',JSON.stringify({stage:'hydrate-error',messageId:row.messageId,error:String(error)}));
+      records.push({id:row.messageId,kind:'mail',title:row.subject||'(sin asunto)',subtitle:[row.sender,row.date].filter(Boolean).join(' · '),preview:row.snippet,body:row.snippet,unread:row.unread,fields:{sender:row.sender,senderEmail:row.senderEmail,to:'',date:row.date,threadId:row.threadId,messageId:row.messageId},sourceRef:{threadId:row.threadId,messageId:row.messageId,url:'https://mail.google.com/mail/u/0/#inbox/'+row.threadId}});
+    }finally{if(tempTargetId){try{await provider.closeTarget?.(tempTargetId);}catch{}}}
+  }
+  console.log('[semantic-gmail]',JSON.stringify({stage:'collection',providerId:provider.id,targetId,rowCount:rows.length,recordCount:records.length,hydrated:records.filter(r=>Boolean(r.body&&r.body!==r.preview)).length}));
+  const items=records.map(record=>[record.fields.sender,record.title,record.preview].filter(Boolean).join(' — '));
+  return {sourceKind:'gmail',semanticObjects:[{id:'gmail-mail-collection',type:'mail-list',label:'Inbox',title:'Últimos mails',description:records.length+' mails como objetos semánticos',items,records,actions:[],provenance:{url:snapshot.url,pageTitle:snapshot.title,elementIds:rows.map(row=>'gmail:'+row.messageId),boxes:rows.map(row=>row.bbox)}}]};
 }
-
 
 type RecipeState = {
   status: 'hit' | 'miss' | 'stale';

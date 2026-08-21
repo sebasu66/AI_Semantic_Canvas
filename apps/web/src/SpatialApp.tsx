@@ -9,6 +9,7 @@ type ProviderChoice = 'auto'|BrowserProviderId;
 type BrowserProviderStatus = { id:BrowserProviderId; label:string; configured:boolean; connected:boolean; targetCount:number; detail?:string };
 type BrowserTarget = { providerId:BrowserProviderId; targetId:string; title:string; url:string; browserLabel:string };
 type SemanticAction = { id:string; kind:'navigate'|'click'; label:string; href?:string; selector?:string; itemIndex?:number; sourceIndex?:number };
+type SemanticRecord = { id:string; kind:'mail'; title:string; subtitle?:string; preview?:string; body?:string; unread?:boolean; fields:Record<string,string>; sourceRef:{threadId:string;messageId:string;url:string} };
 type SemanticObject = {
   id:string;
   type:string;
@@ -19,6 +20,7 @@ type SemanticObject = {
   description?:string;
   text?:string;
   items?:string[];
+  records?:SemanticRecord[];
   imageUrl?:string;
   actions:SemanticAction[];
   provenance:{ url:string; pageTitle:string; elementIds:string[]; boxes:number[][] };
@@ -141,8 +143,31 @@ function rankObject(object:SemanticObject){
   return 30;
 }
 
+function MailCollectionVisual({records}:{records:SemanticRecord[]}){
+  const [selectedId,setSelectedId]=useState(records[0]?.id||'');
+  useEffect(()=>{if(records.length&&!records.some(r=>r.id===selectedId))setSelectedId(records[0].id);},[records,selectedId]);
+  const selected=records.find(r=>r.id===selectedId)||records[0];
+  if(!selected)return <div className="mailCollectionEmpty">No mail objects</div>;
+  return <div className="mailCollection">
+    <div className="mailRecordList">{records.map(record=><button key={record.id} className={'mailRecordButton '+(record.id===selected.id?'active ':'')+(record.unread?'unread':'')} onClick={()=>setSelectedId(record.id)}>
+      <span className="mailSender">{record.fields.sender||record.fields.senderEmail||'Unknown'}</span>
+      <strong>{record.title}</strong>
+      <small>{record.preview||record.subtitle}</small>
+      <time>{record.fields.date}</time>
+    </button>)}</div>
+    <article className="mailRecordDetail">
+      <div className="mailDetailMeta"><span>{selected.unread?'UNREAD':'MAIL OBJECT'}</span><time>{selected.fields.date}</time></div>
+      <h3>{selected.title}</h3>
+      <p className="mailFrom">{selected.fields.sender}{selected.fields.senderEmail?' <'+selected.fields.senderEmail+'>':''}{selected.fields.to?' · '+selected.fields.to:''}</p>
+      <div className="mailBody">{selected.body||selected.preview||'Sin cuerpo disponible.'}</div>
+      <footer><code>{selected.sourceRef.messageId}</code><span>semantic mail object</span></footer>
+    </article>
+  </div>;
+}
+
 function PrimaryVisual({object,onAction,busy}:{object:SemanticObject;onAction:(a:SemanticAction)=>void;busy:boolean}){
   if(object.imageUrl) return <img className="heroImage" src={object.imageUrl} alt={object.title||object.label} draggable={false}/>;
+  if(object.type==='mail-list'&&object.records?.length) return <MailCollectionVisual records={object.records}/>;
   if(object.type==='mail-list'||object.type==='drive-grid'||object.type==='search-results'){
     return <div className={`heroList heroList-${object.type}`}>{(object.items||[]).slice(0,14).map((item,i)=>{
       const action=object.actions[i];
@@ -161,7 +186,8 @@ function SpreadContent({source,objects,mode,busy,onAction,onMode,onFocus,onDock,
   const sorted=[...objects].sort((a,b)=>rankObject(b)-rankObject(a));
   const primary=sorted[0];
   const secondary=sorted.slice(1,5);
-  const itemCount=objects.reduce((sum,o)=>sum+(o.items?.length||0),0);
+  const itemCount=objects.reduce((sum,o)=>sum+(o.records?.length||o.items?.length||0),0);
+  const collectionPrimary=Boolean(primary?.records?.length);
   if(!primary)return null;
 
   if(mode==='minimal'){
@@ -189,7 +215,7 @@ function SpreadContent({source,objects,mode,busy,onAction,onMode,onFocus,onDock,
     </header>
 
     <ObjectMetaHover source={source} objects={objects}/>
-    <div className="editorialGrid">
+    <div className={'editorialGrid '+(collectionPrimary?'collectionGrid':'')}>
       <section className="heroRegion">
         <div className="heroVisual"><PrimaryVisual object={primary} onAction={onAction} busy={busy}/></div>
         {!['mail-list','drive-grid','search-results'].includes(primary.type)&&<div className="heroCopy">
